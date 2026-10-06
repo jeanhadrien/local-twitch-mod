@@ -3,7 +3,10 @@
 // rules are judged in ONE POST to https://openrouter.ai/api/alpha/decisions
 // with { state, questions } (one question per rule); any batch-level failure
 // falls back to sequential per-rule calls. Disable via settings.judging.batch.
+// Transport retries 429/5xx/network/timeout with fixed backoff [500,1000,2000]ms
+// (4 attempts); 400/401/403 fail fast.
 import type { Rule } from "./store";
+import { HttpStatusError, withRetry } from "./retry";
 
 export const DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions";
 export const DEFAULT_MODEL = "typesafe/jev-1.13";
@@ -44,6 +47,8 @@ export interface JudgeOpts {
   timeoutMs?: number;
   /** false = sequential per-rule calls. Default true (batch + sequential fallback). */
   batch?: boolean;
+  /** Fixed backoff delays between retries. Default [500, 1000, 2000] (4 attempts). */
+  retryDelaysMs?: number[];
 }
 
 function toNumber(v: unknown, fallback: number): number {
@@ -153,7 +158,8 @@ async function postDecisions(
       method: "POST",
       signal: ctrl.signal,
     })) as Response;
-    if (!res.ok) throw new Error(`Decisions API error (${res.status})`);
+    if (!res.ok)
+      throw new HttpStatusError(res.status, `Decisions API error (${res.status})`);
     const json = (await res.json()) as {
       answers?: Record<string, unknown>;
       usage?: { cost?: number };
@@ -178,9 +184,14 @@ export async function judgeRule(
   const fetchFn: FetchFn = opts.fetchFn ?? fetch;
   const started = Date.now();
   try {
-    const { answers, cost } = await postDecisions(
-      buildDecisionsBody([rule], state, model),
-      { apiKey: opts.apiKey, fetchFn, timeoutMs: opts.timeoutMs ?? 20000 },
+    const { answers, cost } = await withRetry(
+      () =>
+        postDecisions(buildDecisionsBody([rule], state, model), {
+          apiKey: opts.apiKey,
+          fetchFn,
+          timeoutMs: opts.timeoutMs ?? 20000,
+        }),
+      opts.retryDelaysMs,
     );
     return evaluateAnswer(rule, answers[rule.id], Date.now() - started, cost);
   } catch {
@@ -213,9 +224,14 @@ export async function judgeRulesBatched(
   const model = opts.model || DEFAULT_MODEL;
   const fetchFn: FetchFn = opts.fetchFn ?? fetch;
   const started = Date.now();
-  const { answers, cost } = await postDecisions(
-    buildDecisionsBody(rules, state, model),
-    { apiKey: opts.apiKey, fetchFn, timeoutMs: opts.timeoutMs ?? 20000 },
+  const { answers, cost } = await withRetry(
+    () =>
+      postDecisions(buildDecisionsBody(rules, state, model), {
+        apiKey: opts.apiKey,
+        fetchFn,
+        timeoutMs: opts.timeoutMs ?? 20000,
+      }),
+    opts.retryDelaysMs,
   );
   const latencyMs = Date.now() - started;
   const perRuleCost = cost === null ? null : cost / rules.length;

@@ -121,10 +121,11 @@ async function main() {
   assert.equal(batched[0].costUsd, 0.0001); // aggregate cost split evenly
   console.log("PASS batch judging (one call, per-rule verdicts, split cost)");
 
-  // 7. batch failure → sequential fallback (1 failed batch + 2 single calls)
+  // 7. batch failure → sequential fallback (4 batch attempts + 2 single calls)
   let fallbackCalls = 0;
   const fellBack = await judge.judgeAllRules(twoRules, state, {
     apiKey: "test",
+    retryDelaysMs: [1, 1, 1],
     fetchFn: async (url, init) => {
       fallbackCalls++;
       const body = JSON.parse(init.body);
@@ -141,7 +142,7 @@ async function main() {
       };
     },
   });
-  assert.equal(fallbackCalls, 3);
+  assert.equal(fallbackCalls, 6);
   assert.equal(fellBack.length, 2);
   assert.equal(fellBack[0].matched, true);
   console.log("PASS batch failure → sequential fallback");
@@ -158,6 +159,86 @@ async function main() {
   });
   assert.equal(seqCalls, 2);
   console.log("PASS batch disabled → sequential calls");
+
+  // 9. judge retry: two 500s then success → recovered on 3rd attempt
+  let r9 = 0;
+  const recovered = await judge.judgeRule(rule, state, {
+    apiKey: "test",
+    retryDelaysMs: [5, 5, 5],
+    fetchFn: async () => {
+      r9++;
+      if (r9 < 3) return { json: async () => ({}), ok: false, status: 500 };
+      return {
+        json: async () => ({
+          answers: { "rule-spam": { choice: "spam", confidence: 0.9, probabilities: { spam: 0.9 }, type: "choice" } },
+          usage: { cost: 0.0001 },
+        }),
+        ok: true,
+      };
+    },
+  });
+  assert.equal(r9, 3);
+  assert.equal(recovered.matched, true);
+  console.log("PASS judge retry recovers after 500s");
+
+  // 10. judge: 400 fails fast with a single attempt
+  let r10 = 0;
+  const badRequest = await judge.judgeRule(rule, state, {
+    apiKey: "test",
+    retryDelaysMs: [5, 5, 5],
+    fetchFn: async () => {
+      r10++;
+      return { json: async () => ({}), ok: false, status: 400 };
+    },
+  });
+  assert.equal(r10, 1);
+  assert.equal(badRequest.invalid, true);
+  console.log("PASS judge 400 fails fast (no retry)");
+
+  // 11. judge: persistent 500 exhausts all 4 attempts → invalid
+  let r11 = 0;
+  const dead = await judge.judgeRule(rule, state, {
+    apiKey: "test",
+    retryDelaysMs: [5, 5, 5],
+    fetchFn: async () => {
+      r11++;
+      return { json: async () => ({}), ok: false, status: 500 };
+    },
+  });
+  assert.equal(r11, 4);
+  assert.equal(dead.invalid, true);
+  console.log("PASS judge retries exhausted → invalid");
+
+  // 12-13. Helix delete retry via stubbed global fetch.
+  const actions = require("../dist-server/actions.js");
+  const deleteAction = [{ enabled: true, id: "act-delete", name: "Delete", type: "delete" }];
+  const ctx = { broadcasterId: "b", clientId: "c", dryRun: false, messageId: "m", moderatorId: "mod", moderatorToken: "t" };
+  const realFetch = global.fetch;
+  try {
+    // 12. one 429 then success → ok
+    let d12 = 0;
+    global.fetch = async () => {
+      d12++;
+      return d12 === 1 ? { ok: false, status: 429 } : { ok: true, status: 204 };
+    };
+    const out12 = await actions.executeActions(deleteAction, ctx, { retryDelaysMs: [5, 5, 5] });
+    assert.equal(d12, 2);
+    assert.equal(out12[0].ok, true);
+    console.log("PASS Helix delete retry recovers after 429");
+
+    // 13. persistent 500 → 4 attempts, FAILED outcome
+    let d13 = 0;
+    global.fetch = async () => {
+      d13++;
+      return { ok: false, status: 500, text: async () => "boom" };
+    };
+    const out13 = await actions.executeActions(deleteAction, ctx, { retryDelaysMs: [5, 5, 5] });
+    assert.equal(d13, 4);
+    assert.equal(out13[0].ok, false);
+    console.log("PASS Helix delete retries exhausted → FAILED outcome");
+  } finally {
+    global.fetch = realFetch;
+  }
 
   console.log("All judge checks passed.");
 }
