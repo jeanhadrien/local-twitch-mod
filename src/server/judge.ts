@@ -1,7 +1,8 @@
 // Judge engine — TypeSafe Jev 1.13 via the OpenRouter Decisions API.
-// Jev is NOT an LLM: do NOT use /api/v1/chat/completions. One POST per rule to
-// POST https://openrouter.ai/api/alpha/decisions with { state, questions } and
-// a typed choice answer (choice + confidence + probabilities) per rule.
+// Jev is NOT an LLM: do NOT use /api/v1/chat/completions. By default all enabled
+// rules are judged in ONE POST to https://openrouter.ai/api/alpha/decisions
+// with { state, questions } (one question per rule); any batch-level failure
+// falls back to sequential per-rule calls. Disable via settings.judging.batch.
 import type { Rule } from "./store";
 
 export const DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions";
@@ -35,6 +36,15 @@ export interface JudgeResult {
 }
 
 type FetchFn = typeof fetch;
+
+export interface JudgeOpts {
+  apiKey: string;
+  model?: string;
+  fetchFn?: FetchFn;
+  timeoutMs?: number;
+  /** false = sequential per-rule calls. Default true (batch + sequential fallback). */
+  batch?: boolean;
+}
 
 function toNumber(v: unknown, fallback: number): number {
   const n = typeof v === "number" ? v : Number(v);
@@ -102,76 +112,77 @@ export function evaluateAnswer(
   };
 }
 
-/** Build the per-rule Decisions API request body (criteria map required). */
+/** Build the Decisions API request body for a set of rules (one question per rule). */
 export function buildDecisionsBody(
-  rule: Rule,
+  rules: Rule[],
   state: ChatState,
   model: string,
 ): Record<string, unknown> {
-  const criteria: Record<string, string> = {};
-  for (const c of rule.choices) criteria[c.value] = c.description;
+  const questions: Record<string, unknown> = {};
+  for (const rule of rules) {
+    const criteria: Record<string, string> = {};
+    for (const c of rule.choices) criteria[c.value] = c.description;
+    questions[rule.id] = {
+      criteria,
+      instructions: rule.instruction,
+      type: "choice",
+    };
+  }
   return {
     model,
-    questions: {
-      [rule.id]: {
-        criteria,
-        instructions: rule.instruction,
-        type: "choice",
-      },
-    },
+    questions,
     state: { message: state.message, user: state.user },
   };
+}
+
+/** POST one Decisions request. Throws on transport or API errors. */
+async function postDecisions(
+  body: Record<string, unknown>,
+  opts: { apiKey: string; fetchFn: FetchFn; timeoutMs: number },
+): Promise<{ answers: Record<string, unknown>; cost: number | null }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
+  try {
+    const res = (await opts.fetchFn(DECISIONS_URL, {
+      body: JSON.stringify(body),
+      headers: {
+        Authorization: `Bearer ${opts.apiKey}`,
+        "Content-Type": "application/json",
+        "X-Title": "klawz-chat-ai moderator",
+      },
+      method: "POST",
+      signal: ctrl.signal,
+    })) as Response;
+    if (!res.ok) throw new Error(`Decisions API error (${res.status})`);
+    const json = (await res.json()) as {
+      answers?: Record<string, unknown>;
+      usage?: { cost?: number };
+    };
+    return {
+      answers: json.answers ?? {},
+      cost:
+        json.usage && typeof json.usage.cost === "number" ? json.usage.cost : null,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** One Jev call for one rule. Never throws — transport errors become invalid results. */
 export async function judgeRule(
   rule: Rule,
   state: ChatState,
-  opts: { apiKey: string; model?: string; fetchFn?: FetchFn; timeoutMs?: number },
+  opts: JudgeOpts,
 ): Promise<JudgeResult> {
   const model = opts.model || DEFAULT_MODEL;
   const fetchFn: FetchFn = opts.fetchFn ?? fetch;
   const started = Date.now();
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 20000);
-    let res: Response;
-    try {
-      res = (await fetchFn(DECISIONS_URL, {
-        body: JSON.stringify(buildDecisionsBody(rule, state, model)),
-        headers: {
-          Authorization: `Bearer ${opts.apiKey}`,
-          "Content-Type": "application/json",
-          "X-Title": "klawz-chat-ai moderator",
-        },
-        method: "POST",
-        signal: ctrl.signal,
-      })) as Response;
-    } finally {
-      clearTimeout(timer);
-    }
-    const latencyMs = Date.now() - started;
-    if (!res.ok) {
-      return {
-        choice: null,
-        confidence: null,
-        costUsd: null,
-        invalid: true,
-        latencyMs,
-        lowConfidence: false,
-        matched: false,
-        probabilities: null,
-        ruleId: rule.id,
-      };
-    }
-    const json = (await res.json()) as {
-      answers?: Record<string, unknown>;
-      usage?: { cost?: number };
-    };
-    const answer = json.answers?.[rule.id];
-    const cost =
-      json.usage && typeof json.usage.cost === "number" ? json.usage.cost : null;
-    return evaluateAnswer(rule, answer, latencyMs, cost);
+    const { answers, cost } = await postDecisions(
+      buildDecisionsBody([rule], state, model),
+      { apiKey: opts.apiKey, fetchFn, timeoutMs: opts.timeoutMs ?? 20000 },
+    );
+    return evaluateAnswer(rule, answers[rule.id], Date.now() - started, cost);
   } catch {
     return {
       choice: null,
@@ -187,15 +198,48 @@ export async function judgeRule(
   }
 }
 
-/** Sequential per-rule judging (locked decision: isolation over latency). */
+/**
+ * Judge all rules in a single Decisions call (state sent once, one question
+ * per rule). Aggregate cost is split evenly across rules for per-verdict
+ * attribution. Throws on batch-level failure so the caller can fall back to
+ * sequential per-rule calls; a missing answer for one rule only marks that
+ * rule invalid (no retry — avoids double-billing a provider quirk).
+ */
+export async function judgeRulesBatched(
+  rules: Rule[],
+  state: ChatState,
+  opts: JudgeOpts,
+): Promise<JudgeResult[]> {
+  const model = opts.model || DEFAULT_MODEL;
+  const fetchFn: FetchFn = opts.fetchFn ?? fetch;
+  const started = Date.now();
+  const { answers, cost } = await postDecisions(
+    buildDecisionsBody(rules, state, model),
+    { apiKey: opts.apiKey, fetchFn, timeoutMs: opts.timeoutMs ?? 20000 },
+  );
+  const latencyMs = Date.now() - started;
+  const perRuleCost = cost === null ? null : cost / rules.length;
+  return rules.map((rule) =>
+    evaluateAnswer(rule, answers[rule.id], latencyMs, perRuleCost),
+  );
+}
+
+/** Batch by default (single call + sequential fallback); sequential if batch === false. */
 export async function judgeAllRules(
   rules: Rule[],
   state: ChatState,
-  opts: { apiKey: string; model?: string; fetchFn?: FetchFn; timeoutMs?: number },
+  opts: JudgeOpts,
 ): Promise<JudgeResult[]> {
+  const enabled = rules.filter((r) => r.enabled);
+  if (opts.batch !== false && enabled.length > 1) {
+    try {
+      return await judgeRulesBatched(enabled, state, opts);
+    } catch {
+      // Batch failed (one bad rule must not blind the rest) — retry sequentially.
+    }
+  }
   const out: JudgeResult[] = [];
-  for (const rule of rules) {
-    if (!rule.enabled) continue;
+  for (const rule of enabled) {
     out.push(await judgeRule(rule, state, opts));
   }
   return out;

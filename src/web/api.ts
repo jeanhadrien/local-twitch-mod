@@ -27,6 +27,7 @@ export interface Binding {
 export interface SettingsView {
   channel: string;
   dryRun: boolean;
+  judging: { batch: boolean };
   twitch: { clientId: string; broadcasterId: string; moderatorId: string };
   openrouter: { model: string };
   twitchLoggedIn: boolean;

@@ -81,6 +81,84 @@ async function main() {
   });
   console.log("PASS request shape (Decisions API, criteria map, pinned model)");
 
+  const rule2 = {
+    ...rule,
+    choices: [
+      { description: "Contains a suspicious link.", value: "link" },
+      { description: "Ordinary chat.", value: "ok" },
+    ],
+    id: "rule-links",
+    instruction: "Decide whether this message contains a suspicious link.",
+    matchValues: ["link"],
+  };
+  const twoRules = [rule, rule2];
+
+  // 6. batch: two rules, ONE fetch call, per-rule verdicts, cost split evenly
+  let batchCalls = 0;
+  const batched = await judge.judgeAllRules(twoRules, state, {
+    apiKey: "test",
+    fetchFn: async (url, init) => {
+      batchCalls++;
+      const body = JSON.parse(init.body);
+      assert.deepEqual(Object.keys(body.questions).sort(), ["rule-links", "rule-spam"]);
+      assert.deepEqual(Object.keys(body.state).sort(), ["message", "user"]);
+      return {
+        json: async () => ({
+          answers: {
+            "rule-links": { choice: "spam", confidence: 0.9, probabilities: { spam: 0.9 }, type: "choice" },
+            "rule-spam": { choice: "spam", confidence: 0.8, probabilities: { ok: 0.2, spam: 0.8 }, type: "choice" },
+          },
+          usage: { cost: 0.0002 },
+        }),
+        ok: true,
+      };
+    },
+  });
+  assert.equal(batchCalls, 1);
+  assert.equal(batched.length, 2);
+  assert.equal(batched[0].matched, true);
+  assert.equal(batched[1].invalid, true); // "spam" not in rule-links choices
+  assert.equal(batched[0].costUsd, 0.0001); // aggregate cost split evenly
+  console.log("PASS batch judging (one call, per-rule verdicts, split cost)");
+
+  // 7. batch failure → sequential fallback (1 failed batch + 2 single calls)
+  let fallbackCalls = 0;
+  const fellBack = await judge.judgeAllRules(twoRules, state, {
+    apiKey: "test",
+    fetchFn: async (url, init) => {
+      fallbackCalls++;
+      const body = JSON.parse(init.body);
+      if (Object.keys(body.questions).length > 1) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      const id = Object.keys(body.questions)[0];
+      return {
+        json: async () => ({
+          answers: { [id]: { choice: "spam", confidence: 0.9, probabilities: { spam: 0.9 }, type: "choice" } },
+          usage: { cost: 0.0001 },
+        }),
+        ok: true,
+      };
+    },
+  });
+  assert.equal(fallbackCalls, 3);
+  assert.equal(fellBack.length, 2);
+  assert.equal(fellBack[0].matched, true);
+  console.log("PASS batch failure → sequential fallback");
+
+  // 8. batch disabled → sequential from the start
+  let seqCalls = 0;
+  await judge.judgeAllRules(twoRules, state, {
+    apiKey: "test",
+    batch: false,
+    fetchFn: async () => {
+      seqCalls++;
+      return { json: async () => ({ answers: {}, usage: {} }), ok: true };
+    },
+  });
+  assert.equal(seqCalls, 2);
+  console.log("PASS batch disabled → sequential calls");
+
   console.log("All judge checks passed.");
 }
 

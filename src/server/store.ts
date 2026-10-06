@@ -35,6 +35,7 @@ export interface Binding {
 export interface Settings {
   channel: string;
   dryRun: boolean;
+  judging: { batch: boolean };
   twitch: { clientId: string; broadcasterId: string; moderatorId: string };
   openrouter: { model: string };
 }
@@ -109,6 +110,7 @@ function defaultSettings(): Settings {
   return {
     channel: "",
     dryRun: true,
+    judging: { batch: true },
     twitch: { clientId: "", broadcasterId: "", moderatorId: "" },
     openrouter: { model: "typesafe/jev-1.13" },
   };

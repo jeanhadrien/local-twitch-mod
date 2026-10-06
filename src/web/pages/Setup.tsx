@@ -8,6 +8,7 @@ export function SetupPage() {
   const [saved, setSaved] = useState("");
   const [form, setForm] = useState({
     apiKey: "",
+    batchJudging: true,
     broadcasterId: "",
     channel: "",
     clientId: "",
@@ -24,6 +25,7 @@ export function SetupPage() {
       setSettings(s);
       setForm((f) => ({
         ...f,
+        batchJudging: s.judging?.batch !== false,
         broadcasterId: s.twitch.broadcasterId,
         channel: s.channel,
         clientId: s.twitch.clientId,
@@ -50,6 +52,7 @@ export function SetupPage() {
       const s = await api.saveSettings({
         channel: form.channel,
         dryRun: form.dryRun,
+        judging: { batch: form.batchJudging },
         openrouter: { model: form.model },
         secrets: {
           openrouter: form.apiKey ? { apiKey: form.apiKey } : {},
@@ -113,6 +116,10 @@ export function SetupPage() {
       <label className="row">
         <input type="checkbox" checked={form.dryRun} onChange={(e) => setForm({ ...form, dryRun: e.target.checked })} />
         Dry-run mode (judge + log, never delete)
+      </label>
+      <label className="row">
+        <input type="checkbox" checked={form.batchJudging} onChange={(e) => setForm({ ...form, batchJudging: e.target.checked })} />
+        Batch judging (one Jev call for all rules, sequential fallback on failure)
       </label>
       <div className="row">
         <button onClick={() => void save()}>Save</button>

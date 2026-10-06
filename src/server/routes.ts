@@ -40,6 +40,7 @@ function sanitizedSettings() {
   return {
     channel: s.channel,
     dryRun: s.dryRun,
+    judging: { batch: s.judging?.batch !== false },
     openrouter: { model: s.openrouter.model },
     twitch: s.twitch,
     twitchLoggedIn: Boolean(secrets.twitch?.accessToken),
@@ -59,10 +60,17 @@ export function registerRoutes(app: Express): void {
     const dryRun = typeof body["dryRun"] === "boolean" ? body["dryRun"] : cur.dryRun;
     const tw = (body["twitch"] ?? {}) as Record<string, unknown>;
     const or = (body["openrouter"] ?? {}) as Record<string, unknown>;
+    const judgingBody = (body["judging"] ?? {}) as Record<string, unknown>;
     const next = {
       ...cur,
       channel: channel.trim().replace(/^#/, ""),
       dryRun,
+      judging: {
+        batch:
+          typeof judgingBody["batch"] === "boolean"
+            ? (judgingBody["batch"] as boolean)
+            : (cur.judging?.batch ?? true),
+      },
       openrouter: {
         model:
           typeof or["model"] === "string" && or["model"] ? (or["model"] as string) : cur.openrouter.model,
@@ -189,7 +197,7 @@ export function registerRoutes(app: Express): void {
     const results = await judgeAllRules(
       rules,
       { message: body.message, user: body.user ?? "tester" },
-      { apiKey, model: settings.openrouter.model },
+      { apiKey, batch: settings.judging?.batch !== false, model: settings.openrouter.model },
     );
     const bindings = getBindings();
     const actions = getActions();
@@ -337,7 +345,7 @@ export async function handleLiveMessage(
   const results = await judgeAllRules(
     rules,
     { message: text, user },
-    { apiKey, model: settings.openrouter.model },
+    { apiKey, batch: settings.judging?.batch !== false, model: settings.openrouter.model },
   );
   for (const r of results) {
     const resolved = r.matched

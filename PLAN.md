@@ -20,7 +20,7 @@ Twitch IRC (tmi.js) → message event
   → append to logs.jsonl + push to UI via SSE
 ```
 
-- Single-call judge was rejected: user chose 1 call per rule for isolation.
+- Batched judge (revised decision): all enabled rules go in ONE Decisions call (one question per rule); any batch-level failure falls back to sequential per-rule calls. Toggled by `settings.judging.batch` (default ON).
 - `choices` model: per-rule (confirmed).
 - Delete actor: same account that logged in (confirmed must be mod).
 
@@ -44,7 +44,7 @@ VerdictLog { ts, user, msgId, msgText, ruleId, choice, confidence, probabilities
 ## Judge engine — TypeSafe Jev 1.13 (NOT an LLM)
 - MVP uses **`typesafe/jev-1.13`** via the **Decisions API**, not `/api/v1/chat/completions`. Chat-completions SDKs will NOT work.
 - Endpoint: `POST https://openrouter.ai/api/alpha/decisions` with OpenRouter API key (no TypeSafe account needed). Model pinned to `typesafe/jev-1.13` (`~typesafe/jev-latest` alias only if user opts into auto-upgrade).
-- Request shape per rule (1 call per rule, locked decision):
+- Request shape (batched by default; `judging.batch=false` → 1 call per rule):
   ```json
   { "model": "typesafe/jev-1.13",
     "state": { "user": "...", "message": "..." },
