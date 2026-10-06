@@ -1,6 +1,7 @@
 // Action resolution + Helix enforcement for delete / timeout / ban / warn.
 import type { ActionDef, Binding } from "./store";
 import { HttpStatusError, withRetry } from "./retry";
+import { refreshAccessToken } from "./token";
 
 /** Resolve bindings for (ruleId, choiceValue) → enabled actions, in binding order. */
 export function resolveActions(
@@ -41,36 +42,62 @@ export interface ActionOutcome {
   error?: string;
 }
 
+/**
+ * Run a Helix request builder with the moderator token. On a 401 (expired
+ * access token) refresh the OAuth token once and retry with the fresh one,
+ * caching it on `ctx` so later actions in the same batch reuse it. Every other
+ * error passes through untouched.
+ */
+async function withHelixToken<T>(
+  ctx: EnforceCtx,
+  fn: (token: string) => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn(ctx.moderatorToken);
+  } catch (err) {
+    if (err instanceof HttpStatusError && err.status === 401) {
+      const fresh = await refreshAccessToken();
+      ctx.moderatorToken = fresh;
+      return fn(fresh);
+    }
+    throw err;
+  }
+}
+
 async function helixDeleteMessage(
   ctx: EnforceCtx,
   retryDelaysMs?: number[],
 ): Promise<void> {
-  await withRetry(async () => {
-    const q = new URLSearchParams({
-      broadcaster_id: ctx.broadcasterId,
-      message_id: ctx.messageId,
-      moderator_id: ctx.moderatorId,
-    });
-    const res = await fetch(`https://api.twitch.tv/helix/moderation/chat?${q}`, {
-      headers: {
-        Authorization: `Bearer ${ctx.moderatorToken}`,
-        "Client-Id": ctx.clientId,
-      },
-      method: "DELETE",
-    });
-    if (!res.ok && res.status !== 204) {
-      let detail = "";
-      try {
-        detail = (await res.text()).slice(0, 200);
-      } catch {
-        // empty body or stubbed response — status is enough
-      }
-      throw new HttpStatusError(
-        res.status,
-        `Helix delete failed (${res.status})${detail ? `: ${detail}` : ""}`,
-      );
-    }
-  }, retryDelaysMs);
+  await withRetry(
+    () =>
+      withHelixToken(ctx, async (token) => {
+        const q = new URLSearchParams({
+          broadcaster_id: ctx.broadcasterId,
+          message_id: ctx.messageId,
+          moderator_id: ctx.moderatorId,
+        });
+        const res = await fetch(`https://api.twitch.tv/helix/moderation/chat?${q}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Client-Id": ctx.clientId,
+          },
+          method: "DELETE",
+        });
+        if (!res.ok && res.status !== 204) {
+          let detail = "";
+          try {
+            detail = (await res.text()).slice(0, 200);
+          } catch {
+            // empty body or stubbed response — status is enough
+          }
+          throw new HttpStatusError(
+            res.status,
+            `Helix delete failed (${res.status})${detail ? `: ${detail}` : ""}`,
+          );
+        }
+      }),
+    retryDelaysMs,
+  );
 }
 
 const MAX_TIMEOUT_SEC = 1209600;
@@ -88,37 +115,41 @@ async function helixBanUser(
   action: ActionDef,
   retryDelaysMs?: number[],
 ): Promise<void> {
-  await withRetry(async () => {
-    const q = new URLSearchParams({
-      broadcaster_id: ctx.broadcasterId,
-      moderator_id: ctx.moderatorId,
-    });
-    const data: Record<string, unknown> = { user_id: ctx.userId };
-    if (action.type === "timeout")
-      data["duration"] = normalizeTimeoutSec(action.params?.durationSec);
-    data["reason"] = action.params?.reason ?? "";
-    const res = await fetch(`https://api.twitch.tv/helix/moderation/bans?${q}`, {
-      body: JSON.stringify({ data }),
-      headers: {
-        Authorization: `Bearer ${ctx.moderatorToken}`,
-        "Client-Id": ctx.clientId,
-        "Content-Type": "application/json",
-      },
-      method: "POST",
-    });
-    if (!res.ok) {
-      let detail = "";
-      try {
-        detail = (await res.text()).slice(0, 200);
-      } catch {
-        // empty body or stubbed response — status is enough
-      }
-      throw new HttpStatusError(
-        res.status,
-        `Helix ban failed (${res.status})${detail ? `: ${detail}` : ""}`,
-      );
-    }
-  }, retryDelaysMs);
+  await withRetry(
+    () =>
+      withHelixToken(ctx, async (token) => {
+        const q = new URLSearchParams({
+          broadcaster_id: ctx.broadcasterId,
+          moderator_id: ctx.moderatorId,
+        });
+        const data: Record<string, unknown> = { user_id: ctx.userId };
+        if (action.type === "timeout")
+          data["duration"] = normalizeTimeoutSec(action.params?.durationSec);
+        data["reason"] = action.params?.reason ?? "";
+        const res = await fetch(`https://api.twitch.tv/helix/moderation/bans?${q}`, {
+          body: JSON.stringify({ data }),
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Client-Id": ctx.clientId,
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        });
+        if (!res.ok) {
+          let detail = "";
+          try {
+            detail = (await res.text()).slice(0, 200);
+          } catch {
+            // empty body or stubbed response — status is enough
+          }
+          throw new HttpStatusError(
+            res.status,
+            `Helix ban failed (${res.status})${detail ? `: ${detail}` : ""}`,
+          );
+        }
+      }),
+    retryDelaysMs,
+  );
 }
 
 /** POST /helix/moderation/warnings — reason is required by Twitch (1..500 chars). */
@@ -127,35 +158,39 @@ async function helixWarnUser(
   action: ActionDef,
   retryDelaysMs?: number[],
 ): Promise<void> {
-  await withRetry(async () => {
-    const q = new URLSearchParams({
-      broadcaster_id: ctx.broadcasterId,
-      moderator_id: ctx.moderatorId,
-    });
-    const res = await fetch(`https://api.twitch.tv/helix/moderation/warnings?${q}`, {
-      body: JSON.stringify({
-        data: { reason: action.params?.reason ?? "", user_id: ctx.userId },
+  await withRetry(
+    () =>
+      withHelixToken(ctx, async (token) => {
+        const q = new URLSearchParams({
+          broadcaster_id: ctx.broadcasterId,
+          moderator_id: ctx.moderatorId,
+        });
+        const res = await fetch(`https://api.twitch.tv/helix/moderation/warnings?${q}`, {
+          body: JSON.stringify({
+            data: { reason: action.params?.reason ?? "", user_id: ctx.userId },
+          }),
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Client-Id": ctx.clientId,
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        });
+        if (!res.ok) {
+          let detail = "";
+          try {
+            detail = (await res.text()).slice(0, 200);
+          } catch {
+            // empty body or stubbed response — status is enough
+          }
+          throw new HttpStatusError(
+            res.status,
+            `Helix warn failed (${res.status})${detail ? `: ${detail}` : ""}`,
+          );
+        }
       }),
-      headers: {
-        Authorization: `Bearer ${ctx.moderatorToken}`,
-        "Client-Id": ctx.clientId,
-        "Content-Type": "application/json",
-      },
-      method: "POST",
-    });
-    if (!res.ok) {
-      let detail = "";
-      try {
-        detail = (await res.text()).slice(0, 200);
-      } catch {
-        // empty body or stubbed response — status is enough
-      }
-      throw new HttpStatusError(
-        res.status,
-        `Helix warn failed (${res.status})${detail ? `: ${detail}` : ""}`,
-      );
-    }
-  }, retryDelaysMs);
+    retryDelaysMs,
+  );
 }
 
 /** Execute resolved actions in order. Dry-run short-circuits first; banning/warning needs a userId. */

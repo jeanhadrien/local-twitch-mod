@@ -3,6 +3,13 @@ import { Client } from "tmi.js";
 
 const TWITCH_AUTH = "https://id.twitch.tv/oauth2";
 
+/**
+ * Supplies a currently-valid OAuth access token, refreshing it when needed.
+ * Callers pass `getFreshAccessToken` from token.ts; tmi.js re-invokes it on
+ * every (re)connect so a rotated token is picked up automatically.
+ */
+export type TokenProvider = () => Promise<string>;
+
 export function redirectUri(port: number): string {
   return `http://localhost:${port}/auth/callback`;
 }
@@ -29,7 +36,7 @@ export async function exchangeCode(
   clientSecret: string,
   code: string,
   port: number,
-): Promise<{ access_token: string; refresh_token?: string }> {
+): Promise<{ access_token: string; expires_in?: number; refresh_token?: string }> {
   const res = await fetch(`${TWITCH_AUTH}/token`, {
     body: new URLSearchParams({
       client_id: clientId,
@@ -42,7 +49,11 @@ export async function exchangeCode(
     method: "POST",
   });
   if (!res.ok) throw new Error(`Token exchange failed (${res.status})`);
-  return (await res.json()) as { access_token: string; refresh_token?: string };
+  return (await res.json()) as {
+    access_token: string;
+    expires_in?: number;
+    refresh_token?: string;
+  };
 }
 
 export async function getCurrentUser(
@@ -71,7 +82,7 @@ let streamIdFetchedAt = 0;
 // Bumped on every (re)connect/teardown so in-flight lookups can't write into a new session.
 let streamSession = 0;
 let streamClientId = "";
-let streamToken = "";
+let streamGetToken: TokenProvider = async () => "";
 let streamChannel = "";
 
 function localStreamId(): string {
@@ -113,19 +124,26 @@ export async function fetchStreamId(
  * (so entries are never null) and upgrade it to the real Helix id if live.
  * A reconnect bumps the session and mints a fresh local id.
  */
-export function beginStreamSession(clientId: string, token: string, channel: string): void {
+export function beginStreamSession(
+  clientId: string,
+  getToken: TokenProvider,
+  channel: string,
+): void {
   streamSession++;
   streamClientId = clientId;
-  streamToken = token;
+  streamGetToken = getToken;
   streamChannel = normalizeChannel(channel);
   currentStreamId = localStreamId();
   streamIdFetchedAt = Date.now();
   const session = streamSession;
-  void fetchStreamId(clientId, token, streamChannel).then((real) => {
+  void (async () => {
+    const token = await getToken().catch(() => "");
+    if (!token) return;
+    const real = await fetchStreamId(clientId, token, streamChannel);
     if (session !== streamSession) return;
     if (real) currentStreamId = real;
     // No real id → keep the minted local id (sticky; never re-minted mid-session).
-  });
+  })();
 }
 
 /**
@@ -138,10 +156,13 @@ export function refreshStreamIdIfStale(): void {
   if (Date.now() - streamIdFetchedAt < STREAM_ID_TTL_MS) return;
   streamIdFetchedAt = Date.now(); // claim the slot to avoid a fetch stampede
   const session = streamSession;
-  void fetchStreamId(streamClientId, streamToken, streamChannel).then((real) => {
+  void (async () => {
+    const token = await streamGetToken().catch(() => "");
+    if (!token) return;
+    const real = await fetchStreamId(streamClientId, token, streamChannel);
     if (session !== streamSession) return;
     if (real) currentStreamId = real;
-  });
+  })();
 }
 
 // --- Chat ingest (singleton tmi.js client) ---
@@ -160,6 +181,8 @@ let connectedChannel = "";
 let connected = false;
 // Serialize (re)connects: concurrent "start" clicks must never create two live clients.
 let connecting: Promise<void> | null = null;
+// True while disconnectChat tears a client down, so its own event handlers stay quiet.
+let closing = false;
 
 function normalizeChannel(channel: string): string {
   return channel.replace(/^#/, "").toLowerCase();
@@ -171,7 +194,7 @@ export function chatStatus(): { connected: boolean; channel: string } {
 
 export async function connectChat(opts: {
   username: string;
-  token: string;
+  getToken: TokenProvider;
   clientId: string;
   channel: string;
   onMessage: Handler;
@@ -193,8 +216,12 @@ export async function connectChat(opts: {
     client = new Client({
       channels: [channel],
       connection: { reconnect: true, secure: true },
-      identity: { password: `oauth:${opts.token}`, username: opts.username },
+      // A function (not a string) so tmi.js re-reads a freshly-refreshed token
+      // on every (re)connect — including Twitch-forced RECONNECTs, which would
+      // otherwise reuse an expired token and permanently drop chat.
+      identity: { password: async () => `oauth:${await opts.getToken()}`, username: opts.username },
     });
+    const created = client;
     client.on("message", (_chan, tags, message, self) => {
       if (self) return;
       opts.onMessage({
@@ -204,10 +231,26 @@ export async function connectChat(opts: {
         userId: (tags["user-id"] as string) ?? "",
       });
     });
+    // Keep status honest across tmi's own reconnect cycle, and surface an auth
+    // failure (tmi then disables its own reconnect — chat would die silently).
+    client.on("connected", () => {
+      if (client !== created || closing) return;
+      connected = true;
+    });
+    client.on("disconnected", (reason) => {
+      if (client !== created || closing) return;
+      connected = false;
+      console.warn(`[chat] disconnected from #${channel}: ${reason ?? "unknown"}`);
+    });
+    client.on("notice", (_chan, msgid, message) => {
+      if (client !== created || closing) return;
+      if (typeof message === "string" && /login|auth|token/i.test(message))
+        console.error(`[chat] Twitch notice (${msgid}): ${message}`);
+    });
     await client.connect();
     connected = true;
     connectedChannel = channel;
-    beginStreamSession(opts.clientId, opts.token, channel);
+    beginStreamSession(opts.clientId, opts.getToken, channel);
   })();
   connecting = run;
   try {
@@ -218,11 +261,15 @@ export async function connectChat(opts: {
 }
 
 export async function disconnectChat(): Promise<void> {
-  if (client) {
+  const current = client;
+  if (current) {
+    closing = true;
     try {
-      await client.disconnect();
+      await current.disconnect();
     } catch {
       // ignore teardown errors
+    } finally {
+      closing = false;
     }
   }
   client = null;

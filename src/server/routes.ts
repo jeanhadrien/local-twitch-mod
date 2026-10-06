@@ -37,6 +37,7 @@ import {
   loginUrl,
   refreshStreamIdIfStale,
 } from "./twitch";
+import { getFreshAccessToken } from "./token";
 
 function port(): number {
   return Number(process.env.PORT ?? 3000);
@@ -104,6 +105,7 @@ function sanitizedSettings() {
     twitch: s.twitch,
     twitchLoggedIn: Boolean(secrets.twitch?.accessToken),
     twitchLogin: secrets.twitch?.login ?? null,
+    twitchTokenExpiresAt: secrets.twitch?.accessTokenExpiresAt ?? null,
   };
 }
 
@@ -376,8 +378,8 @@ export function registerRoutes(app: Express): void {
       await connectChat({
         channel: settings.channel,
         clientId: settings.twitch.clientId,
+        getToken: getFreshAccessToken,
         onMessage: (msg) => void handleLiveMessage(msg.user, msg.text, msg.msgId, msg.userId),
-        token: secrets.twitch.accessToken,
         username: secrets.twitch.login,
       });
       res.json({ ok: true, ...chatStatus() });
@@ -422,6 +424,10 @@ export function registerRoutes(app: Express): void {
       patchSecrets({
         twitch: {
           accessToken: tokens.access_token,
+          accessTokenExpiresAt:
+            typeof tokens.expires_in === "number"
+              ? Date.now() + tokens.expires_in * 1000
+              : undefined,
           login: me.login,
           refreshToken: tokens.refresh_token,
           userId: me.id,

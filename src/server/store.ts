@@ -70,6 +70,8 @@ export interface Secrets {
     clientSecret?: string;
     accessToken?: string;
     refreshToken?: string;
+    /** Epoch ms when `accessToken` expires (from OAuth `expires_in`), if known. */
+    accessTokenExpiresAt?: number;
     login?: string;
     userId?: string;
   };

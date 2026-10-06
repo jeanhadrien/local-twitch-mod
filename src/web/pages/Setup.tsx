@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 
+/** Human-readable access-token expiry; the server refreshes shortly before it lapses. */
+function describeTokenExpiry(expiresAt: number | null): string {
+  if (!expiresAt) return "expiry unknown (auto-refresh handled on 401)";
+  const mins = Math.round((expiresAt - Date.now()) / 60000);
+  if (mins <= 0) return "expired — log in again";
+  if (mins < 60) return `expires in ${mins} min (auto-refreshes)`;
+  return `expires in ${(mins / 60).toFixed(1)} h (auto-refreshes)`;
+}
+
 export function SetupPage() {
   const [settings, setSettings] = useState<unknown>(null);
   const [loaded, setLoaded] = useState(false);
@@ -75,6 +84,7 @@ export function SetupPage() {
   const s = settings as unknown as {
     twitchLoggedIn: boolean;
     twitchLogin: string | null;
+    twitchTokenExpiresAt: number | null;
   };
 
   return (
@@ -129,6 +139,9 @@ export function SetupPage() {
         Twitch status: {s.twitchLoggedIn ? `logged in as ${s.twitchLogin}` : "not logged in"}.
         The login account must be a moderator of the channel for deletes to work.
       </p>
+      {s.twitchLoggedIn && (
+        <p>Twitch token: {describeTokenExpiry(s.twitchTokenExpiresAt)}.</p>
+      )}
     </div>
   );
 }

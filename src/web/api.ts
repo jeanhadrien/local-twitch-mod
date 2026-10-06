@@ -48,6 +48,7 @@ export interface SettingsView {
   openrouter: { model: string };
   twitchLoggedIn: boolean;
   twitchLogin: string | null;
+  twitchTokenExpiresAt: number | null;
 }
 export interface TestVerdict {
   ruleId: string;

@@ -340,6 +340,54 @@ async function main() {
     global.fetch = realFetch2;
   }
 
+  // 13b. expired access token: Helix 401 → refresh once → retry; ctx + secrets updated.
+  {
+    const st = require("../dist-server/store.js");
+    st.saveSettings({
+      ...st.getSettings(),
+      twitch: { ...st.getSettings().twitch, clientId: "cid" },
+    });
+    st.saveSecrets({
+      twitch: {
+        accessToken: "old",
+        clientSecret: "sec",
+        login: "u",
+        refreshToken: "rt1",
+        userId: "1",
+      },
+    });
+    const realFetch3 = global.fetch;
+    let refreshCalls = 0;
+    let helixCalls = 0;
+    try {
+      global.fetch = async (url, init) => {
+        if (String(url).includes("id.twitch.tv/oauth2/token")) {
+          refreshCalls++;
+          return {
+            json: async () => ({ access_token: "fresh", expires_in: 14000, refresh_token: "rt2" }),
+            ok: true,
+            status: 200,
+          };
+        }
+        helixCalls++;
+        const auth = init && init.headers && init.headers.Authorization;
+        if (auth === "Bearer old")
+          return { ok: false, status: 401, text: async () => "unauthorized" };
+        return { ok: true, status: 204 };
+      };
+      const ctxExp = { ...ctx, moderatorToken: "old" };
+      const outExp = await actions.executeActions(deleteAction, ctxExp, { retryDelaysMs: [5, 5, 5] });
+      assert.equal(refreshCalls, 1);
+      assert.equal(helixCalls, 2); // old token (401) then refreshed token (204)
+      assert.equal(outExp[0].ok, true);
+      assert.equal(ctxExp.moderatorToken, "fresh"); // cached for the rest of the batch
+      assert.equal(st.getSecrets().twitch.refreshToken, "rt2"); // rotated token persisted
+      console.log("PASS Helix 401 → token refresh + retry (rotated token persisted)");
+    } finally {
+      global.fetch = realFetch3;
+    }
+  }
+
   // 14-18. noul rules: request shape, threshold match/no-match, invalid answer.
   const noulRule = {
     choices: [],

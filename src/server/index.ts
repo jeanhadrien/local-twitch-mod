@@ -6,6 +6,7 @@ import { handleLiveMessage } from "./routes";
 import { registerRoutes } from "./routes";
 import { getSecrets, getSettings, seedIfMissing } from "./store";
 import { chatStatus, connectChat } from "./twitch";
+import { getFreshAccessToken } from "./token";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -45,8 +46,8 @@ async function autoConnect(): Promise<void> {
     await connectChat({
       channel: settings.channel,
       clientId: settings.twitch.clientId,
+      getToken: getFreshAccessToken,
       onMessage: (msg) => void handleLiveMessage(msg.user, msg.text, msg.msgId, msg.userId),
-      token: secrets.twitch.accessToken,
       username: secrets.twitch.login,
     });
     console.log(`Joined #${settings.channel} as ${secrets.twitch.login}`);
