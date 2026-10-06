@@ -6,7 +6,7 @@ rem   2. Pull latest main from git
 rem   3. Run npm install if needed (missing or out of date node_modules)
 rem   4. Run npm run build if needed (missing or out of date dist/, dist-server/)
 rem   5. Start the server (npm start) on http://localhost:3000
-setlocal
+setlocal enabledelayedexpansion
 pushd "%~dp0"
 
 echo === klawz-chat-ai setup ===
@@ -82,20 +82,20 @@ if not exist ".git" (
 ) else (
   git fetch origin main
   if errorlevel 1 (
-    echo WARNING: git fetch failed (offline?). Continuing with local files.
+    echo WARNING: git fetch failed ^(offline?^). Continuing with local files.
   ) else (
     rem Switch to main if we are on another branch, then fast-forward only.
     for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set CURRENT_BRANCH=%%b
-    if not "%CURRENT_BRANCH%"=="main" (
-      echo Currently on branch %CURRENT_BRANCH%, switching to main...
+    if not "!CURRENT_BRANCH!"=="main" (
+      echo Currently on branch !CURRENT_BRANCH!, switching to main...
       git checkout main
       if errorlevel 1 (
-        echo WARNING: could not switch to main. Continuing on %CURRENT_BRANCH%.
+        echo WARNING: could not switch to main. Continuing on !CURRENT_BRANCH!.
       )
     )
     git pull --ff-only origin main
     if errorlevel 1 (
-      echo WARNING: git pull failed (diverged or local changes?). Continuing with local files.
+      echo WARNING: git pull failed ^(diverged or local changes?^). Continuing with local files.
       echo         Commit or stash your changes, then run: git pull --ff-only origin main
     ) else (
       echo Up to date with origin/main.
