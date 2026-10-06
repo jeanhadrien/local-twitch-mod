@@ -1,6 +1,6 @@
 node_modules/
 dist/
 dist-server/
-data/.secrets.json
-data/logs.jsonl
+data/
+.codegraph/
 *.local
