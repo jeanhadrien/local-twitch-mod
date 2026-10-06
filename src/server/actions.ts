@@ -1,5 +1,4 @@
-// Action resolution + Helix enforcement. MVP enforces `delete`;
-// `timeout` / `ban` are stubbed in the datamodel + UI only.
+// Action resolution + Helix enforcement for delete / timeout / ban / warn.
 import type { ActionDef, Binding } from "./store";
 import { HttpStatusError, withRetry } from "./retry";
 
@@ -29,6 +28,8 @@ export interface EnforceCtx {
   moderatorToken: string;
   clientId: string;
   messageId: string;
+  /** Twitch user id of the message author (empty when tmi.js omitted it). */
+  userId: string;
   dryRun: boolean;
 }
 
@@ -72,7 +73,92 @@ async function helixDeleteMessage(
   }, retryDelaysMs);
 }
 
-/** Execute resolved actions in order. Dry-run and timeout/ban stubs never touch Helix. */
+const MAX_TIMEOUT_SEC = 1209600;
+
+/** Clamp a timeout duration into Twitch's 1..1209600s range; unset/invalid → 600. */
+function normalizeTimeoutSec(raw: unknown): number {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 600;
+  return Math.min(MAX_TIMEOUT_SEC, Math.max(1, Math.floor(n)));
+}
+
+/** POST /helix/moderation/bans — timeout with a duration, permanent ban without one. */
+async function helixBanUser(
+  ctx: EnforceCtx,
+  action: ActionDef,
+  retryDelaysMs?: number[],
+): Promise<void> {
+  await withRetry(async () => {
+    const q = new URLSearchParams({
+      broadcaster_id: ctx.broadcasterId,
+      moderator_id: ctx.moderatorId,
+    });
+    const data: Record<string, unknown> = { user_id: ctx.userId };
+    if (action.type === "timeout")
+      data["duration"] = normalizeTimeoutSec(action.params?.durationSec);
+    data["reason"] = action.params?.reason ?? "";
+    const res = await fetch(`https://api.twitch.tv/helix/moderation/bans?${q}`, {
+      body: JSON.stringify({ data }),
+      headers: {
+        Authorization: `Bearer ${ctx.moderatorToken}`,
+        "Client-Id": ctx.clientId,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        detail = (await res.text()).slice(0, 200);
+      } catch {
+        // empty body or stubbed response — status is enough
+      }
+      throw new HttpStatusError(
+        res.status,
+        `Helix ban failed (${res.status})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+  }, retryDelaysMs);
+}
+
+/** POST /helix/moderation/warnings — reason is required by Twitch (1..500 chars). */
+async function helixWarnUser(
+  ctx: EnforceCtx,
+  action: ActionDef,
+  retryDelaysMs?: number[],
+): Promise<void> {
+  await withRetry(async () => {
+    const q = new URLSearchParams({
+      broadcaster_id: ctx.broadcasterId,
+      moderator_id: ctx.moderatorId,
+    });
+    const res = await fetch(`https://api.twitch.tv/helix/moderation/warnings?${q}`, {
+      body: JSON.stringify({
+        data: { reason: action.params?.reason ?? "", user_id: ctx.userId },
+      }),
+      headers: {
+        Authorization: `Bearer ${ctx.moderatorToken}`,
+        "Client-Id": ctx.clientId,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        detail = (await res.text()).slice(0, 200);
+      } catch {
+        // empty body or stubbed response — status is enough
+      }
+      throw new HttpStatusError(
+        res.status,
+        `Helix warn failed (${res.status})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+  }, retryDelaysMs);
+}
+
+/** Execute resolved actions in order. Dry-run short-circuits first; banning/warning needs a userId. */
 export async function executeActions(
   resolved: ActionDef[],
   ctx: EnforceCtx,
@@ -89,24 +175,30 @@ export async function executeActions(
       });
       continue;
     }
-    if (a.type === "delete") {
-      try {
+    try {
+      if (a.type === "delete") {
         await helixDeleteMessage(ctx, opts?.retryDelaysMs);
-        outcomes.push({ actionId: a.id, ok: true, type: a.type });
-      } catch (err) {
+      } else if (a.type === "timeout" || a.type === "ban") {
+        if (!ctx.userId) throw new Error(`missing user id — cannot ${a.type}`);
+        await helixBanUser(ctx, a, opts?.retryDelaysMs);
+      } else if (a.type === "warn") {
+        if (!ctx.userId) throw new Error("missing user id — cannot warn");
+        await helixWarnUser(ctx, a, opts?.retryDelaysMs);
+      } else {
         outcomes.push({
           actionId: a.id,
-          error: err instanceof Error ? err.message : String(err),
-          ok: false,
-          type: a.type,
+          ok: true,
+          skipped: `${String(a.type)}-not-wired`,
+          type: String(a.type),
         });
+        continue;
       }
-    } else {
-      // timeout / ban: stubbed for MVP (params plumbed, not wired).
+      outcomes.push({ actionId: a.id, ok: true, type: a.type });
+    } catch (err) {
       outcomes.push({
         actionId: a.id,
-        ok: true,
-        skipped: `${a.type}-not-wired-in-mvp`,
+        error: err instanceof Error ? err.message : String(err),
+        ok: false,
         type: a.type,
       });
     }

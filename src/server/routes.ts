@@ -74,6 +74,19 @@ function parseContext(raw: unknown): ContextConfig | { errors: string[] } {
   return cfg;
 }
 
+/** Server-side validation for Helix-enforced action params (mirrors the Actions UI). */
+function actionError(a: Pick<ActionDef, "type" | "params">): string | null {
+  const reason = a.params?.reason ?? "";
+  if (a.type === "warn" && (reason.trim().length === 0 || reason.length > 500))
+    return "warn reason must be 1..500 characters";
+  const duration = a.params?.durationSec;
+  if (a.type === "timeout" && duration !== undefined) {
+    if (!Number.isFinite(duration) || duration < 1 || duration > 1209600)
+      return "timeout durationSec must be 1..1209600";
+  }
+  return null;
+}
+
 function sanitizedSettings() {
   const s = getSettings();
   const secrets = getSecrets();
@@ -199,8 +212,13 @@ export function registerRoutes(app: Express): void {
       id: newId("act"),
       name: body.name ?? "Untitled action",
       params: body.params ?? {},
-      type: body.type === "timeout" || body.type === "ban" ? body.type : "delete",
+      type:
+        body.type === "timeout" || body.type === "ban" || body.type === "warn"
+          ? body.type
+          : "delete",
     };
+    const invalid = actionError(action);
+    if (invalid) return res.status(400).json({ error: invalid });
     actions.push(action);
     saveActions(actions);
     res.status(201).json(action);
@@ -210,7 +228,14 @@ export function registerRoutes(app: Express): void {
     const actions = getActions();
     const i = actions.findIndex((a) => a.id === req.params.id);
     if (i === -1) return res.status(404).json({ error: "action not found" });
-    actions[i] = { ...actions[i], ...req.body, id: actions[i].id };
+    const merged: ActionDef = {
+      ...actions[i],
+      ...(req.body as Partial<ActionDef>),
+      id: actions[i].id,
+    };
+    const invalid = actionError(merged);
+    if (invalid) return res.status(400).json({ error: invalid });
+    actions[i] = merged;
     saveActions(actions);
     return res.json(actions[i]);
   });
@@ -333,7 +358,7 @@ export function registerRoutes(app: Express): void {
       setPaused(false);
       await connectChat({
         channel: settings.channel,
-        onMessage: (msg) => void handleLiveMessage(msg.user, msg.text, msg.msgId),
+        onMessage: (msg) => void handleLiveMessage(msg.user, msg.text, msg.msgId, msg.userId),
         token: secrets.twitch.accessToken,
         username: secrets.twitch.login,
       });
@@ -416,6 +441,7 @@ export async function handleLiveMessage(
   user: string,
   text: string,
   msgId: string,
+  userId: string,
 ): Promise<void> {
   broadcast("chat", { msgId, text, ts: new Date().toISOString(), user });
   if (paused) return;
@@ -456,11 +482,20 @@ export async function handleLiveMessage(
         messageId: msgId,
         moderatorId: settings.twitch.moderatorId,
         moderatorToken: secrets.twitch?.accessToken ?? "",
+        userId,
       });
+      for (const o of outcomes) {
+        if (!o.ok)
+          console.error(
+            `[action] ${o.type}:${o.actionId} FAILED for ${user} (${msgId}): ${o.error ?? "unknown error"}`,
+          );
+      }
     }
     const entry = {
-      actionsTaken: outcomes.map(
-        (o) => `${o.type}:${o.actionId}${o.skipped ? ` (${o.skipped})` : o.ok ? "" : " FAILED"}`,
+      actionsTaken: outcomes.map((o) =>
+        o.ok
+          ? `${o.type}:${o.actionId}${o.skipped ? ` (${o.skipped})` : ""}`
+          : `${o.type}:${o.actionId} FAILED${o.error ? `: ${o.error}` : ""}`,
       ),
       choice: r.choice,
       confidence: r.confidence,

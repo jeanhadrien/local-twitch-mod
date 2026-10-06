@@ -21,7 +21,7 @@ export interface Rule {
 export interface ActionDef {
   id: string;
   name: string;
-  type: "delete" | "timeout" | "ban";
+  type: "delete" | "timeout" | "ban" | "warn";
   enabled: boolean;
   params?: { durationSec?: number; reason?: string };
 }

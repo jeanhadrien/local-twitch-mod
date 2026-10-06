@@ -1,7 +1,8 @@
 # Twitch setup — Client ID & Client Secret
 
 How to create the Twitch application credentials this bot needs to read chat
-and delete messages. Takes ~5 minutes.
+and moderate it (delete messages, time out / ban users, warn users). Takes ~5
+minutes.
 
 > **Log in with the right account.** Do these steps logged in as the Twitch
 > account the bot will act as. That account must be a **moderator** (or the
@@ -46,8 +47,9 @@ Go to <https://dev.twitch.tv/console> and log in if asked.
 |---|---|
 | `chat:read` | Reading live chat |
 | `chat:edit` | Chat identity via IRC |
-| `moderator:manage:chat_messages` | **Deleting** messages (MVP enforcement) |
-| `moderator:manage:banned_users` | Timeouts/bans (stubbed in MVP, requested now so you don't re-auth later) |
+| `moderator:manage:chat_messages` | **Deleting** messages |
+| `moderator:manage:banned_users` | **Timeouts / bans** |
+| `moderator:manage:warnings` | **Warnings** (warned user is muted until they acknowledge) |
 
 ## Troubleshooting
 

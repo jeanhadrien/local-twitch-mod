@@ -18,6 +18,7 @@ export function loginUrl(clientId: string, port: number): string {
       "chat:edit",
       "moderator:manage:chat_messages",
       "moderator:manage:banned_users",
+      "moderator:manage:warnings",
     ].join(" "),
   });
   return `${TWITCH_AUTH}/authorize?${q}`;
@@ -62,6 +63,7 @@ export async function getCurrentUser(
 
 export interface ChatMsg {
   user: string;
+  userId: string;
   text: string;
   msgId: string;
 }
@@ -113,6 +115,7 @@ export async function connectChat(opts: {
         msgId: (tags["id"] as string) ?? `${Date.now()}`,
         text: message,
         user: tags["display-name"] ?? tags["username"] ?? "unknown",
+        userId: (tags["user-id"] as string) ?? "",
       });
     });
     await client.connect();

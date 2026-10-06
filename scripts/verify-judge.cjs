@@ -240,6 +240,98 @@ async function main() {
     global.fetch = realFetch;
   }
 
+  // 12b-12g. Helix timeout / ban / warn via the same stubbed global fetch.
+  const userCtx = { ...ctx, userId: "42" };
+  const banAction = [{ enabled: true, id: "act-ban", name: "Ban", params: { reason: "bye" }, type: "ban" }];
+  const timeoutAction = [{ enabled: true, id: "act-timeout", name: "Timeout", params: {}, type: "timeout" }];
+  const warnAction = [{ enabled: true, id: "act-warn", name: "Warn", params: { reason: "be nice" }, type: "warn" }];
+  const realFetch2 = global.fetch;
+  try {
+    // 12b. ban: POST /moderation/bans, body carries NO duration
+    let banSeen;
+    global.fetch = async (url, init) => {
+      banSeen = { body: JSON.parse(init.body), init, url };
+      return { ok: true, status: 200 };
+    };
+    const banOut = await actions.executeActions(banAction, userCtx, { retryDelaysMs: [5, 5, 5] });
+    assert.equal(banOut[0].ok, true);
+    assert.equal(
+      banSeen.url,
+      "https://api.twitch.tv/helix/moderation/bans?broadcaster_id=b&moderator_id=mod",
+    );
+    assert.equal(banSeen.init.method, "POST");
+    assert.equal(banSeen.init.headers["Content-Type"], "application/json");
+    assert.equal(banSeen.body.data.user_id, "42");
+    assert.equal(banSeen.body.data.duration, undefined);
+    console.log("PASS Helix ban POST (no duration)");
+
+    // 12c. timeout: unset duration defaults to 600
+    let timeoutSeen;
+    global.fetch = async (url, init) => {
+      timeoutSeen = { body: JSON.parse(init.body), url };
+      return { ok: true, status: 200 };
+    };
+    const timeoutOut = await actions.executeActions(timeoutAction, userCtx, { retryDelaysMs: [5, 5, 5] });
+    assert.equal(timeoutOut[0].ok, true);
+    assert.equal(timeoutSeen.body.data.duration, 600);
+    console.log("PASS Helix timeout POST (duration defaults to 600)");
+
+    // 12d. warn: dedicated URL + body shape
+    let warnSeen;
+    global.fetch = async (url, init) => {
+      warnSeen = { body: JSON.parse(init.body), url };
+      return { ok: true, status: 200 };
+    };
+    const warnOut = await actions.executeActions(warnAction, userCtx, { retryDelaysMs: [5, 5, 5] });
+    assert.equal(warnOut[0].ok, true);
+    assert.equal(
+      warnSeen.url,
+      "https://api.twitch.tv/helix/moderation/warnings?broadcaster_id=b&moderator_id=mod",
+    );
+    assert.deepEqual(warnSeen.body, { data: { reason: "be nice", user_id: "42" } });
+    console.log("PASS Helix warn POST (URL + body shape)");
+
+    // 12e. one 429 then success → ok
+    let r12e = 0;
+    global.fetch = async () => {
+      r12e++;
+      return r12e === 1 ? { ok: false, status: 429 } : { ok: true, status: 200 };
+    };
+    const retried = await actions.executeActions(banAction, userCtx, { retryDelaysMs: [5, 5, 5] });
+    assert.equal(r12e, 2);
+    assert.equal(retried[0].ok, true);
+    console.log("PASS Helix ban retry recovers after 429");
+
+    // 12f. 400 fails fast → single attempt, FAILED outcome
+    let r12f = 0;
+    global.fetch = async () => {
+      r12f++;
+      return { ok: false, status: 400, text: async () => "bad request" };
+    };
+    const failed = await actions.executeActions(banAction, userCtx, { retryDelaysMs: [5, 5, 5] });
+    assert.equal(r12f, 1);
+    assert.equal(failed[0].ok, false);
+    console.log("PASS Helix ban 400 fails fast → FAILED outcome");
+
+    // 12g. empty userId → no Helix call, FAILED outcomes for user-targeted actions
+    let r12g = 0;
+    global.fetch = async () => {
+      r12g++;
+      return { ok: true, status: 200 };
+    };
+    const noUser = await actions.executeActions(
+      [...timeoutAction, ...banAction, ...warnAction],
+      { ...ctx, userId: "" },
+      { retryDelaysMs: [5, 5, 5] },
+    );
+    assert.equal(r12g, 0);
+    assert.equal(noUser.length, 3);
+    assert.equal(noUser.every((o) => o.ok === false), true);
+    console.log("PASS Helix user-targeted actions skip when userId missing");
+  } finally {
+    global.fetch = realFetch2;
+  }
+
   // 14-18. noul rules: request shape, threshold match/no-match, invalid answer.
   const noulRule = {
     choices: [],

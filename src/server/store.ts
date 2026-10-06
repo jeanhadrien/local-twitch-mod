@@ -28,7 +28,7 @@ export interface Rule {
 export interface ActionDef {
   id: string;
   name: string;
-  type: "delete" | "timeout" | "ban";
+  type: "delete" | "timeout" | "ban" | "warn";
   enabled: boolean;
   params?: { durationSec?: number; reason?: string };
 }
@@ -150,6 +150,14 @@ function defaultSettings(): Settings {
   };
 }
 
+const WARN_ACTION: ActionDef = {
+  enabled: true,
+  id: "act-warn",
+  name: "Warn user",
+  params: { reason: "Please review the channel rules" },
+  type: "warn",
+};
+
 function defaultActions(): ActionDef[] {
   return [
     {
@@ -159,6 +167,7 @@ function defaultActions(): ActionDef[] {
       params: { reason: "Removed by chat moderator bot" },
       type: "delete",
     },
+    WARN_ACTION,
   ];
 }
 
@@ -201,6 +210,12 @@ export function seedIfMissing(): void {
     writeJson(FILES.rules, defaultRules());
   if (!fs.existsSync(filePath(FILES.actions)))
     writeJson(FILES.actions, defaultActions());
+  // Backfill the warn action for installs seeded before it existed (idempotent).
+  const actions = readJson<ActionDef[]>(FILES.actions, defaultActions());
+  if (!actions.some((a) => a.id === WARN_ACTION.id)) {
+    actions.push(WARN_ACTION);
+    saveActions(actions);
+  }
   if (!fs.existsSync(filePath(FILES.bindings)))
     writeJson(FILES.bindings, defaultBindings());
   if (!fs.existsSync(filePath(FILES.secrets)))

@@ -4,6 +4,7 @@ import { api, type ActionDef } from "../api";
 export function ActionsPage() {
   const [actions, setActions] = useState<ActionDef[] | null>(null);
   const [error, setError] = useState("");
+  const [saveError, setSaveError] = useState<Record<string, string>>({});
 
   async function load() {
     try {
@@ -20,9 +21,19 @@ export function ActionsPage() {
   }
 
   async function save(a: ActionDef) {
+    const reason = a.params?.reason ?? "";
+    if (a.type === "warn" && (reason.trim().length === 0 || reason.length > 500)) {
+      setSaveError((prev) => ({ ...prev, [a.id]: "Warn reason is required (1–500 characters)." }));
+      return;
+    }
     try {
       const saved = await api.saveActions(a);
       setActions((prev) => (prev ?? []).map((x) => (x.id === a.id ? saved : x)));
+      setSaveError((prev) => {
+        const next = { ...prev };
+        delete next[a.id];
+        return next;
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -41,8 +52,8 @@ export function ActionsPage() {
       <h2>Actions</h2>
       {error && <p className="error">{error}</p>}
       <p>
-        MVP enforces <code>delete</code> via Helix. <code>timeout</code> / <code>ban</code> are
-        stubbed (fields plumbed, never executed).
+        All four action types execute via Helix. <code>warn</code> needs the{" "}
+        <code>moderator:manage:warnings</code> scope — re-login from Setup to grant it.
       </p>
       <button
         onClick={() =>
@@ -66,17 +77,23 @@ export function ActionsPage() {
           <div className="row">
             <select
               value={a.type}
-              onChange={(e) =>
+              onChange={(e) => {
+                setSaveError((prev) => {
+                  const next = { ...prev };
+                  delete next[a.id];
+                  return next;
+                });
                 setActions(
                   actions.map((x) =>
                     x.id === a.id ? { ...x, type: e.target.value as ActionDef["type"] } : x,
                   ),
-                )
-              }
+                );
+              }}
             >
-              <option value="delete">delete (live)</option>
-              <option value="timeout">timeout (stubbed)</option>
-              <option value="ban">ban (stubbed)</option>
+              <option value="delete">delete</option>
+              <option value="timeout">timeout</option>
+              <option value="ban">ban</option>
+              <option value="warn">warn</option>
             </select>
             <label className="row">
               <input
@@ -89,35 +106,45 @@ export function ActionsPage() {
               enabled
             </label>
           </div>
-          <div className="row">
-            <input
-              placeholder="reason"
-              value={a.params?.reason ?? ""}
-              onChange={(e) =>
-                setActions(
-                  actions.map((x) =>
-                    x.id === a.id ? { ...x, params: { ...x.params, reason: e.target.value } } : x,
-                  ),
-                )
-              }
-            />
-            {(a.type === "timeout" || a.type === "ban") && (
+          {a.type !== "delete" && (
+            <div className="row">
               <input
-                type="number"
-                placeholder="duration (sec)"
-                value={a.params?.durationSec ?? ""}
+                placeholder="reason"
+                value={a.params?.reason ?? ""}
                 onChange={(e) =>
                   setActions(
                     actions.map((x) =>
-                      x.id === a.id
-                        ? { ...x, params: { ...x.params, durationSec: Number(e.target.value) } }
-                        : x,
+                      x.id === a.id ? { ...x, params: { ...x.params, reason: e.target.value } } : x,
                     ),
                   )
                 }
               />
-            )}
-          </div>
+              {a.type === "timeout" && (
+                <input
+                  type="number"
+                  placeholder="duration (sec, default 600)"
+                  value={a.params?.durationSec ?? ""}
+                  onChange={(e) =>
+                    setActions(
+                      actions.map((x) =>
+                        x.id === a.id
+                          ? {
+                              ...x,
+                              params: {
+                                ...x.params,
+                                durationSec:
+                                  e.target.value === "" ? undefined : Number(e.target.value),
+                              },
+                            }
+                          : x,
+                      ),
+                    )
+                  }
+                />
+              )}
+            </div>
+          )}
+          {saveError[a.id] && <p className="error">{saveError[a.id]}</p>}
           <div className="row">
             <button onClick={() => void save(a)}>Save</button>
             <button onClick={() => void remove(a.id)}>Delete</button>
