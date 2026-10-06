@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type ActionDef } from "../api";
 
 export function ActionsPage() {
@@ -12,8 +12,10 @@ export function ActionsPage() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-  if (actions === null) {
+  useEffect(() => {
     void load();
+  }, []);
+  if (actions === null) {
     return <p>Loading…</p>;
   }
 

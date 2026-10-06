@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 
 export function SetupPage() {
@@ -36,8 +36,10 @@ export function SetupPage() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-  if (!loaded) {
+  useEffect(() => {
     void load();
+  }, []);
+  if (!loaded) {
     return <p>Loading…</p>;
   }
 

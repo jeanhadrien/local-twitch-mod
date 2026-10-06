@@ -7,6 +7,24 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Boot probe: if the bundle fails to render (stale cache, wrong URL),
+      // say so instead of leaving a blank page.
+      setTimeout(function () {
+        var root = document.getElementById("root");
+        if (root && root.children.length === 0) {
+          root.innerHTML =
+            '<div style="font-family:system-ui,sans-serif;padding:24px;max-width:640px">' +
+            "<h1>Klawz Chat Mod — UI failed to start</h1>" +
+            "<p>The page shell loaded but the app bundle did not render. Most likely causes:</p>" +
+            "<ol>" +
+            "<li>Stale cache after a rebuild — hard refresh with <b>Ctrl+Shift+R</b>.</li>" +
+            "<li>Wrong URL — open <b>http://localhost:3000</b> (not a file path, and not :5173 unless <i>npm run dev:web</i> is running).</li>" +
+            "</ol>" +
+            "<p>Press <b>F12 → Console</b> and report any red errors.</p></div>";
+        }
+      }, 3000);
+    </script>
     <script type="module" src="/src/web/main.tsx"></script>
   </body>
 </html>

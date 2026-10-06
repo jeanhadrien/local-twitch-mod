@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type ActionDef, type Binding, type Rule, type TestVerdict } from "../api";
 
 export function RulesPage() {
@@ -22,8 +22,10 @@ export function RulesPage() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-  if (rules === null) {
+  useEffect(() => {
     void load();
+  }, []);
+  if (rules === null) {
     return <p>Loading…</p>;
   }
 
