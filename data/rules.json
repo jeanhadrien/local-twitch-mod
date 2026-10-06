@@ -1,0 +1,22 @@
+[
+  {
+    "choices": [
+      {
+        "description": "Unsolicited links, repeated copy-paste, follow-for-follow or promo spam.",
+        "value": "spam"
+      },
+      {
+        "description": "Ordinary chat: questions, reactions, emotes, conversation.",
+        "value": "ok"
+      }
+    ],
+    "enabled": true,
+    "id": "rule-spam",
+    "instruction": "Decide whether this Twitch chat message is spam that should be removed.",
+    "matchValues": [
+      "spam"
+    ],
+    "minConfidence": 0.6,
+    "name": "Spam / links"
+  }
+]

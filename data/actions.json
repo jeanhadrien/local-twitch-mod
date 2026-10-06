@@ -1,0 +1,11 @@
+[
+  {
+    "enabled": true,
+    "id": "act-delete",
+    "name": "Delete message",
+    "params": {
+      "reason": "Removed by chat moderator bot"
+    },
+    "type": "delete"
+  }
+]

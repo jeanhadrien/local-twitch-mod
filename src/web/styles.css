@@ -1,0 +1,23 @@
+:root { font-family: system-ui, sans-serif; color-scheme: light dark; }
+body { margin: 0; }
+.app { max-width: 1080px; margin: 0 auto; padding: 16px; }
+header { display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #8884; padding-bottom: 8px; }
+nav { display: flex; gap: 8px; }
+nav button.active { font-weight: bold; text-decoration: underline; }
+main { padding-top: 12px; display: grid; gap: 12px; }
+label { display: grid; gap: 4px; margin: 8px 0; }
+input, select, textarea, button { padding: 6px 8px; font-size: 14px; }
+input, textarea, select { width: 100%; max-width: 560px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row input[type="checkbox"] { width: auto; }
+.card { border: 1px solid #8884; border-radius: 8px; padding: 12px; margin: 12px 0; display: grid; gap: 8px; }
+.error { color: #c00; }
+.ok { color: #0a0; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.feed { list-style: none; padding: 0; max-height: 60vh; overflow: auto; display: grid; gap: 4px; }
+.feed li { border-bottom: 1px solid #8882; padding: 4px 0; }
+.feed li.hit { background: #f66a22; }
+.feed li.low { background: #db01; }
+.meta { opacity: 0.6; font-size: 12px; }
+.verdict { background: #8881; padding: 8px; white-space: pre-wrap; }
+code { background: #8882; padding: 1px 4px; border-radius: 4px; }

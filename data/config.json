@@ -1,0 +1,12 @@
+{
+  "channel": "",
+  "dryRun": true,
+  "twitch": {
+    "clientId": "",
+    "broadcasterId": "",
+    "moderatorId": ""
+  },
+  "openrouter": {
+    "model": "typesafe/jev-1.13"
+  }
+}

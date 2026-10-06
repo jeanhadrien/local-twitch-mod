@@ -1,0 +1,9 @@
+[
+  {
+    "actionIds": [
+      "act-delete"
+    ],
+    "choiceValue": "spam",
+    "ruleId": "rule-spam"
+  }
+]
