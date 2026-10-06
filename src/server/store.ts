@@ -77,6 +77,8 @@ export interface Secrets {
 }
 
 export interface VerdictLog {
+  kind: "verdict";
+  streamId: string;
   ts: string;
   user: string;
   msgId: string;
@@ -93,6 +95,25 @@ export interface VerdictLog {
   actionsTaken: string[];
   dryRun: boolean;
   note?: string;
+}
+
+/** A single ingested chat message, logged alongside verdicts for replay. */
+export interface ChatLog {
+  kind: "chat";
+  ts: string;
+  user: string;
+  msgId: string;
+  text: string;
+  streamId: string;
+}
+
+/** One line of data/logs.jsonl — discriminated by `kind`. */
+export type LogEntry = VerdictLog | ChatLog;
+
+export interface ReadLogsOptions {
+  limit?: number;
+  streamId?: string;
+  kind?: "chat" | "verdict";
 }
 
 export const DATA_DIR =
@@ -285,27 +306,84 @@ export function saveBindings(b: Binding[]): void {
   writeJson(FILES.bindings, b);
 }
 
-// Append-only verdict log
-export function appendLog(entry: VerdictLog): void {
+// Append-only event log (chat + verdict) scoped to a stream.
+export function appendLog(entry: LogEntry): void {
   ensureDataDir();
   fs.appendFileSync(filePath(FILES.logs), JSON.stringify(entry) + "\n");
 }
 
-export function readLogs(limit = 200): VerdictLog[] {
+// When filtering we scan backward from the tail; cap the scan so a huge file
+// doesn't cost a full read-history parse.
+const LOG_SCAN_CAP = 5000;
+
+/**
+ * Parse one log line. Tolerates malformed JSON (→ null) and legacy lines with
+ * no `kind` (treated as verdicts, with an empty `streamId`).
+ */
+function parseLogLine(line: string): LogEntry | null {
+  try {
+    const obj = JSON.parse(line) as Record<string, unknown>;
+    if (!obj || typeof obj !== "object") return null;
+    const streamId = typeof obj["streamId"] === "string" ? obj["streamId"] : "";
+    if (obj["kind"] === "chat") {
+      return {
+        kind: "chat",
+        msgId: typeof obj["msgId"] === "string" ? obj["msgId"] : "",
+        streamId,
+        text: typeof obj["text"] === "string" ? obj["text"] : "",
+        ts: typeof obj["ts"] === "string" ? obj["ts"] : "",
+        user: typeof obj["user"] === "string" ? obj["user"] : "",
+      };
+    }
+    // Explicit verdict, or a legacy line predating the `kind` discriminator.
+    return { ...(obj as unknown as VerdictLog), kind: "verdict", streamId };
+  } catch {
+    return null;
+  }
+}
+
+function readLogLines(): string[] {
   try {
     const raw = fs.readFileSync(filePath(FILES.logs), "utf8");
-    const lines = raw.split("\n").filter((l) => l.trim().length > 0);
-    const tail = lines.slice(Math.max(0, lines.length - limit));
-    return tail
-      .map((l) => {
-        try {
-          return JSON.parse(l) as VerdictLog;
-        } catch {
-          return null;
-        }
-      })
-      .filter((x): x is VerdictLog => x !== null);
+    return raw.split("\n").filter((l) => l.trim().length > 0);
   } catch {
     return [];
   }
+}
+
+/**
+ * Recent log entries, oldest first. Without filters this is the plain tail
+ * (unchanged). With `streamId`/`kind` filters it walks backward from the tail
+ * collecting up to `limit` matches — a naive tail-then-filter would under-fill.
+ */
+export function readLogs(opts: ReadLogsOptions = {}): LogEntry[] {
+  const limit = opts.limit ?? 200;
+  const lines = readLogLines();
+  if (opts.streamId === undefined && opts.kind === undefined) {
+    return lines
+      .slice(Math.max(0, lines.length - limit))
+      .map(parseLogLine)
+      .filter((x): x is LogEntry => x !== null);
+  }
+  const out: LogEntry[] = [];
+  const start = Math.max(0, lines.length - LOG_SCAN_CAP);
+  for (let i = lines.length - 1; i >= start && out.length < limit; i--) {
+    const entry = parseLogLine(lines[i]);
+    if (!entry) continue;
+    if (opts.streamId !== undefined && entry.streamId !== opts.streamId) continue;
+    if (opts.kind !== undefined && entry.kind !== opts.kind) continue;
+    out.push(entry);
+  }
+  return out.reverse();
+}
+
+/** `streamId` of the most recent log entry that has one, or null. */
+export function latestStreamId(): string | null {
+  const lines = readLogLines();
+  const start = Math.max(0, lines.length - LOG_SCAN_CAP);
+  for (let i = lines.length - 1; i >= start; i--) {
+    const entry = parseLogLine(lines[i]);
+    if (entry && entry.streamId) return entry.streamId;
+  }
+  return null;
 }

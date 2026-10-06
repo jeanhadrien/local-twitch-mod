@@ -1,6 +1,14 @@
 // Verifies the judge module against a mocked Decisions API (no network).
-// Cases: valid matching choice, low-confidence match (log only), invalid choice.
+// Cases: valid matching choice, low-confidence match (log only), invalid choice,
+// plus log-store parsing/filtering (mixed kinds, legacy tolerance, backward scan).
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+// Isolate persistence checks from the real ./data dir. Must be set before
+// dist-server/store.js first loads (it snapshots DATA_DIR at module load).
+process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "klawz-verify-"));
 
 async function main() {
   const judge = require("../dist-server/judge.js");
@@ -411,6 +419,73 @@ async function main() {
   assert.equal(noulBad.choice, null);
   assert.equal(noulBad.confidence, null);
   console.log("PASS noul missing value → invalid");
+
+  // 19+. log store: discriminated union, legacy tolerance, filters, backward scan.
+  const store = require("../dist-server/store.js");
+  const logsPath = path.join(store.DATA_DIR, "logs.jsonl");
+  const writeLines = (entries) =>
+    fs.writeFileSync(logsPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+
+  // 19. mixed chat/verdict lines parse into their kinds, oldest first.
+  writeLines([
+    { kind: "chat", msgId: "m1", streamId: "s1", text: "hi", ts: "t1", user: "a" },
+    { kind: "verdict", msgId: "m1", ruleId: "r1", streamId: "s1", ts: "t2", user: "a" },
+  ]);
+  const mixed = store.readLogs({});
+  assert.equal(mixed.length, 2);
+  assert.equal(mixed[0].kind, "chat");
+  assert.equal(mixed[1].kind, "verdict");
+  console.log("PASS logs: mixed-kind parse");
+
+  // 20. legacy lines (no kind) parse as verdicts; malformed lines are skipped.
+  writeLines([
+    { ts: "t1", user: "a", msgId: "m1", msgText: "hi", ruleId: "r1", choice: "ok" },
+    { kind: "chat", msgId: "m2", streamId: "s1", text: "yo", ts: "t2", user: "b" },
+  ]);
+  fs.appendFileSync(logsPath, "not json\n");
+  const legacy = store.readLogs({});
+  assert.equal(legacy.length, 2);
+  assert.equal(legacy[0].kind, "verdict");
+  assert.equal(legacy[0].streamId, "");
+  assert.equal(legacy[1].kind, "chat");
+  console.log("PASS logs: legacy + malformed line tolerance");
+
+  // 21. streamId and kind filters.
+  writeLines([
+    { kind: "chat", msgId: "a1", streamId: "s1", text: "x", ts: "1", user: "u" },
+    { kind: "chat", msgId: "b1", streamId: "s2", text: "y", ts: "2", user: "u" },
+    { kind: "verdict", msgId: "a1", ruleId: "r", streamId: "s1", ts: "3", user: "u" },
+    { kind: "verdict", msgId: "b1", ruleId: "r", streamId: "s2", ts: "4", user: "u" },
+  ]);
+  const onlyS2 = store.readLogs({ streamId: "s2" });
+  assert.equal(onlyS2.length, 2);
+  assert.equal(onlyS2.every((e) => e.streamId === "s2"), true);
+  const onlyChats = store.readLogs({ kind: "chat" });
+  assert.equal(onlyChats.length, 2);
+  assert.equal(onlyChats.every((e) => e.kind === "chat"), true);
+  console.log("PASS logs: streamId + kind filters");
+
+  // 22. backward scan fills to `limit` (a naive tail-then-filter returns fewer).
+  const many = [];
+  for (let i = 0; i < 300; i++)
+    many.push({ kind: "chat", msgId: `a${i}`, streamId: "old", text: "x", ts: String(i), user: "u" });
+  for (let i = 0; i < 100; i++)
+    many.push({ kind: "chat", msgId: `b${i}`, streamId: "new", text: "y", ts: `n${i}`, user: "u" });
+  writeLines(many);
+  const filled = store.readLogs({ limit: 200, streamId: "old" });
+  assert.equal(filled.length, 200);
+  assert.equal(filled[0].msgId, "a100");
+  assert.equal(filled[199].msgId, "a299");
+  console.log("PASS logs: backward scan fills to limit");
+
+  // 23. latestStreamId returns the most recent entry's id, skipping legacy lines.
+  writeLines([
+    { kind: "chat", msgId: "z1", streamId: "s-old", text: "x", ts: "1", user: "u" },
+    { ts: "2", user: "u", msgId: "z2", msgText: "y", ruleId: "r", choice: "ok" },
+    { kind: "chat", msgId: "z3", streamId: "s-new", text: "z", ts: "3", user: "u" },
+  ]);
+  assert.equal(store.latestStreamId(), "s-new");
+  console.log("PASS logs: latestStreamId scans tail");
 
   console.log("All judge checks passed.");
 }

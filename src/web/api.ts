@@ -62,6 +62,46 @@ export interface TestVerdict {
   wouldExecute: Array<{ id: string; name: string; type: string }>;
 }
 
+/** Verdict line from data/logs.jsonl (kind discriminates from chat entries). */
+export interface VerdictLog {
+  kind: "verdict";
+  streamId: string;
+  ts: string;
+  user: string;
+  msgId: string;
+  msgText: string;
+  ruleId: string;
+  choice: string | null;
+  confidence: number | null;
+  probabilities: Record<string, number> | null;
+  matched: boolean;
+  lowConfidence: boolean;
+  invalid: boolean;
+  latencyMs: number;
+  costUsd: number | null;
+  actionsTaken: string[];
+  dryRun: boolean;
+  note?: string;
+}
+
+/** Chat line from data/logs.jsonl. */
+export interface ChatLog {
+  kind: "chat";
+  ts: string;
+  user: string;
+  msgId: string;
+  text: string;
+  streamId: string;
+}
+
+export type LogEntry = VerdictLog | ChatLog;
+
+export interface LogQuery {
+  limit?: number;
+  streamId?: string;
+  kind?: "chat" | "verdict";
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -77,8 +117,22 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   getActions: () => req<ActionDef[]>("/api/actions"),
   getBindings: () => req<Binding[]>("/api/bindings"),
-  getBotStatus: () => req<{ connected: boolean; channel: string; paused: boolean }>("/api/bot/status"),
-  getLogs: (limit = 200) => req<Record<string, unknown>[]>(`/api/logs?limit=${limit}`),
+  getBotStatus: () =>
+    req<{
+      connected: boolean;
+      channel: string;
+      paused: boolean;
+      streamId: string | null;
+      latestStreamId: string | null;
+    }>("/api/bot/status"),
+  getLogs: (q: LogQuery = {}) => {
+    const params = new URLSearchParams();
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
+    if (q.streamId) params.set("streamId", q.streamId);
+    if (q.kind) params.set("kind", q.kind);
+    const qs = params.toString();
+    return req<LogEntry[]>(`/api/logs${qs ? `?${qs}` : ""}`);
+  },
   getRules: () => req<Rule[]>("/api/rules"),
   getSettings: () => req<SettingsView>("/api/settings"),
   previewContext: (context: ContextConfig, vars?: { message?: string; username?: string }) =>

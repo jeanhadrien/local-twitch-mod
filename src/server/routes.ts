@@ -11,6 +11,7 @@ import {
   getRules,
   getSecrets,
   getSettings,
+  latestStreamId,
   newId,
   patchSecrets,
   readLogs,
@@ -23,6 +24,7 @@ import {
   type ContextConfig,
   type ContextField,
   type Rule,
+  type VerdictLog,
 } from "./store";
 import {
   chatStatus,
@@ -30,7 +32,10 @@ import {
   disconnectChat,
   exchangeCode,
   getCurrentUser,
+  getCurrentStreamId,
+  getStreamIdForMessage,
   loginUrl,
+  refreshStreamIdIfStale,
 } from "./twitch";
 
 function port(): number {
@@ -328,7 +333,13 @@ export function registerRoutes(app: Express): void {
   // --- logs ---
   app.get("/api/logs", (req: Request, res: Response) => {
     const limit = Math.min(Number(req.query.limit ?? 200) || 200, 2000);
-    res.json(readLogs(limit));
+    const streamId =
+      typeof req.query.streamId === "string" && req.query.streamId
+        ? req.query.streamId
+        : undefined;
+    const kindRaw = req.query.kind;
+    const kind = kindRaw === "chat" || kindRaw === "verdict" ? kindRaw : undefined;
+    res.json(readLogs({ kind, limit, streamId }));
   });
 
   // --- SSE live feed ---
@@ -345,7 +356,13 @@ export function registerRoutes(app: Express): void {
 
   // --- bot controls ---
   app.get("/api/bot/status", (_req, res) => {
-    res.json({ ...chatStatus(), paused: isPaused(), settings: sanitizedSettings() });
+    res.json({
+      ...chatStatus(),
+      latestStreamId: latestStreamId(),
+      paused: isPaused(),
+      settings: sanitizedSettings(),
+      streamId: getCurrentStreamId(),
+    });
   });
 
   app.post("/api/bot/start", async (_req, res: Response) => {
@@ -358,6 +375,7 @@ export function registerRoutes(app: Express): void {
       setPaused(false);
       await connectChat({
         channel: settings.channel,
+        clientId: settings.twitch.clientId,
         onMessage: (msg) => void handleLiveMessage(msg.user, msg.text, msg.msgId, msg.userId),
         token: secrets.twitch.accessToken,
         username: secrets.twitch.login,
@@ -443,7 +461,13 @@ export async function handleLiveMessage(
   msgId: string,
   userId: string,
 ): Promise<void> {
-  broadcast("chat", { msgId, text, ts: new Date().toISOString(), user });
+  // Tag with the current id (real or local) before any await; refresh lazily for
+  // the next message in the background.
+  const streamId = getStreamIdForMessage();
+  refreshStreamIdIfStale();
+  const chatTs = new Date().toISOString();
+  broadcast("chat", { msgId, streamId, text, ts: chatTs, user });
+  appendLog({ kind: "chat", msgId, streamId, text, ts: chatTs, user });
   if (paused) return;
   const settings = getSettings();
   const secrets = getSecrets();
@@ -491,7 +515,7 @@ export async function handleLiveMessage(
           );
       }
     }
-    const entry = {
+    const entry: VerdictLog = {
       actionsTaken: outcomes.map((o) =>
         o.ok
           ? `${o.type}:${o.actionId}${o.skipped ? ` (${o.skipped})` : ""}`
@@ -502,6 +526,7 @@ export async function handleLiveMessage(
       costUsd: r.costUsd,
       dryRun: settings.dryRun,
       invalid: r.invalid,
+      kind: "verdict",
       latencyMs: r.latencyMs,
       lowConfidence: r.lowConfidence,
       matched: r.matched,
@@ -514,6 +539,7 @@ export async function handleLiveMessage(
           : undefined,
       probabilities: r.probabilities,
       ruleId: r.ruleId,
+      streamId,
       ts: new Date().toISOString(),
       user,
     };

@@ -26,11 +26,23 @@ export default function App() {
         </nav>
       </header>
       <main>
-        {tab === "Setup" && <SetupPage />}
-        {tab === "Actions" && <ActionsPage />}
-        {tab === "Rules" && <RulesPage />}
-        {tab === "Context" && <ContextPage />}
-        {tab === "Live" && <LivePage />}
+        {/* Keep every page mounted and hide inactive ones so Live keeps its
+            EventSource, feeds, and filter text across tab switches. */}
+        <div style={{ display: tab === "Setup" ? "block" : "none" }}>
+          <SetupPage />
+        </div>
+        <div style={{ display: tab === "Actions" ? "block" : "none" }}>
+          <ActionsPage />
+        </div>
+        <div style={{ display: tab === "Rules" ? "block" : "none" }}>
+          <RulesPage />
+        </div>
+        <div style={{ display: tab === "Context" ? "block" : "none" }}>
+          <ContextPage />
+        </div>
+        <div style={{ display: tab === "Live" ? "block" : "none" }}>
+          <LivePage />
+        </div>
       </main>
     </div>
   );

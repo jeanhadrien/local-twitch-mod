@@ -33,7 +33,8 @@ Action { id, name, type: "delete" | "timeout" | "ban", params?: { durationSec?, 
 Binding { ruleId, choiceValue, actionIds: string[] }
 Context { mode: "json" | "text", fields: Array<{ key: string, value: string }>, text: string }
 Settings { channel, twitch: { clientId, clientSecret, broadcasterId, moderatorId }, openrouter: { apiKey, model: "typesafe/jev-1.13" }, dryRun: boolean, context: Context }
-VerdictLog { ts, user, msgId, msgText, ruleId, choice, confidence, probabilities, latencyMs, costUsd, actionsTaken[] }
+VerdictLog { kind: "verdict", streamId, ts, user, msgId, msgText, ruleId, choice, confidence, probabilities, latencyMs, costUsd, actionsTaken[] }
+ChatLog { kind: "chat", streamId, ts, user, msgId, text }
 ```
 
 - Why separate `Binding`: supports 1 rule → n actions and reuse of actions across rules/choices.
@@ -64,7 +65,7 @@ VerdictLog { ts, user, msgId, msgText, ruleId, choice, confidence, probabilities
 2. **Actions:** CRUD action list (`delete` live in MVP; `timeout`/`ban` stubbed with reason + duration fields).
 3. **Rules:** CRUD rule cards (name, instruction textarea, choices list editor, match-values checkboxes, linked actions multi-select, enabled toggle) + test playground (paste message → run judgment → show verdict, no actions executed).
 4. **Context:** define the Jev `state` — JSON-object mode (flat key/value rows) or String mode (raw text), both embedding `{{message}}`/`{{username}}`; token reference, live sample preview, and validation that blocks Save on unknown tokens / empty / duplicate keys.
-5. **Live:** chat feed with verdict badges + moderation log (filter by rule/action), pause/resume bot button.
+5. **Live:** chat feed with verdict badges + moderation log (filter by rule/action), pause/resume bot button. Chat + verdict history persists per Twitch stream and reloads from `logs.jsonl`; the tab stays mounted so switching tabs never drops it.
 
 API sketch:
 - `GET/POST /api/rules`, `GET/POST /api/actions`
@@ -77,7 +78,7 @@ API sketch:
 ## Persistence (JSON)
 - `./data/config.json` — settings (non-secret)
 - `./data/rules.json`, `./data/actions.json`, `./data/bindings.json`
-- `./data/logs.jsonl` — append-only verdict/action log
+- `./data/logs.jsonl` — append-only event log (chat + verdicts, each tagged with a stream id)
 - `./data/.secrets.json` — twitch tokens, client secret, openrouter key (gitignored)
 
 ## File layout

@@ -44,6 +44,7 @@ async function autoConnect(): Promise<void> {
     if (chatStatus().connected) return;
     await connectChat({
       channel: settings.channel,
+      clientId: settings.twitch.clientId,
       onMessage: (msg) => void handleLiveMessage(msg.user, msg.text, msg.msgId, msg.userId),
       token: secrets.twitch.accessToken,
       username: secrets.twitch.login,
