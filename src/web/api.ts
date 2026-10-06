@@ -81,7 +81,7 @@ export const api = {
       : req<Rule>(`/api/rules/${r.id}`, { body: JSON.stringify(r), method: "PUT" }),
   saveSettings: (body: unknown) =>
     req<SettingsView>("/api/settings", { body: JSON.stringify(body), method: "PUT" }),
-  startBot: () => req<{ connected: boolean }>("/api/bot/start", { method: "POST" }),
+  startBot: () => req<{ connected: boolean; channel: string }>("/api/bot/start", { method: "POST" }),
   stopBot: () => req<{ ok: boolean }>("/api/bot/stop", { method: "POST" }),
   test: (body: { user: string; message: string; ruleId?: string }) =>
     req<TestVerdict[]>("/api/test", { body: JSON.stringify(body), method: "POST" }),

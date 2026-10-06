@@ -29,6 +29,7 @@ export function LivePage() {
   const [status, setStatus] = useState({ connected: false, channel: "", paused: false });
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -58,6 +59,20 @@ export function LivePage() {
     ? verdicts.filter((v) => v.ruleId.includes(filter) || v.actionsTaken.join(" ").includes(filter))
     : verdicts;
 
+  // Serialize Start/Stop/Pause clicks — no concurrent bot-control requests.
+  const runBotOp = (op: () => Promise<void>) => async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await op();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div>
       <h2>Live</h2>
@@ -67,17 +82,30 @@ export function LivePage() {
         {status.paused ? "bot paused" : "bot active"}
       </p>
       <div className="row">
-        <button onClick={() => api.startBot().then((r) => setStatus((s) => ({ ...s, ...r }))).catch((e) => setError(String(e)))}>Start / join</button>
-        <button onClick={() => api.stopBot().then(() => setStatus({ ...status, connected: false })).catch((e) => setError(String(e)))}>
+        <button
+          disabled={busy}
+          onClick={runBotOp(async () => {
+            const r = await api.startBot();
+            setStatus((s) => ({ ...s, ...r }));
+          })}
+        >
+          Start / join
+        </button>
+        <button
+          disabled={busy}
+          onClick={runBotOp(async () => {
+            await api.stopBot();
+            setStatus((s) => ({ ...s, connected: false }));
+          })}
+        >
           Stop
         </button>
         <button
-          onClick={() =>
-            api
-              .pauseBot(!status.paused)
-              .then((r) => setStatus({ ...status, paused: r.paused }))
-              .catch((e) => setError(String(e)))
-          }
+          disabled={busy}
+          onClick={runBotOp(async () => {
+            const r = await api.pauseBot(!status.paused);
+            setStatus((s) => ({ ...s, paused: r.paused }));
+          })}
         >
           {status.paused ? "Resume bot" : "Pause bot"}
         </button>

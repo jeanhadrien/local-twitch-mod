@@ -71,6 +71,12 @@ type Handler = (msg: ChatMsg) => void;
 let client: Client | null = null;
 let connectedChannel = "";
 let connected = false;
+// Serialize (re)connects: concurrent "start" clicks must never create two live clients.
+let connecting: Promise<void> | null = null;
+
+function normalizeChannel(channel: string): string {
+  return channel.replace(/^#/, "").toLowerCase();
+}
 
 export function chatStatus(): { connected: boolean; channel: string } {
   return { channel: connectedChannel, connected };
@@ -82,24 +88,43 @@ export async function connectChat(opts: {
   channel: string;
   onMessage: Handler;
 }): Promise<void> {
-  await disconnectChat();
-  const channel = opts.channel.replace(/^#/, "").toLowerCase();
-  client = new Client({
-    channels: [channel],
-    connection: { reconnect: true, secure: true },
-    identity: { password: `oauth:${opts.token}`, username: opts.username },
-  });
-  client.on("message", (_chan, tags, message, self) => {
-    if (self) return;
-    opts.onMessage({
-      msgId: (tags["id"] as string) ?? `${Date.now()}`,
-      text: message,
-      user: tags["display-name"] ?? tags["username"] ?? "unknown",
+  const channel = normalizeChannel(opts.channel);
+  if (connecting) {
+    // Another start is already in flight — wait for it, then reuse it.
+    try {
+      await connecting;
+    } catch {
+      // Earlier attempt failed; fall through and retry below.
+    }
+    if (connected && connectedChannel === channel) return;
+  } else if (connected && connectedChannel === channel) {
+    return; // Already joined — repeated Start is a no-op (re-click safe).
+  }
+  const run = (async () => {
+    await disconnectChat();
+    client = new Client({
+      channels: [channel],
+      connection: { reconnect: true, secure: true },
+      identity: { password: `oauth:${opts.token}`, username: opts.username },
     });
-  });
-  await client.connect();
-  connected = true;
-  connectedChannel = channel;
+    client.on("message", (_chan, tags, message, self) => {
+      if (self) return;
+      opts.onMessage({
+        msgId: (tags["id"] as string) ?? `${Date.now()}`,
+        text: message,
+        user: tags["display-name"] ?? tags["username"] ?? "unknown",
+      });
+    });
+    await client.connect();
+    connected = true;
+    connectedChannel = channel;
+  })();
+  connecting = run;
+  try {
+    await run;
+  } finally {
+    if (connecting === run) connecting = null;
+  }
 }
 
 export async function disconnectChat(): Promise<void> {
