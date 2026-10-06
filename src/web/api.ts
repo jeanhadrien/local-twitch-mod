@@ -3,11 +3,17 @@ export interface RuleChoice {
   value: string;
   description: string;
 }
+export interface NoulCriteria {
+  true?: string;
+  false?: string;
+}
 export interface Rule {
   id: string;
   name: string;
+  type: "choice" | "noul";
   instruction: string;
   choices: RuleChoice[];
+  criteria?: NoulCriteria;
   matchValues: string[];
   minConfidence: number;
   enabled: boolean;
@@ -24,8 +30,18 @@ export interface Binding {
   choiceValue: string;
   actionIds: string[];
 }
+export interface ContextField {
+  key: string;
+  value: string;
+}
+export interface ContextConfig {
+  mode: "json" | "text";
+  fields: ContextField[];
+  text: string;
+}
 export interface SettingsView {
   channel: string;
+  context: ContextConfig;
   dryRun: boolean;
   judging: { batch: boolean };
   twitch: { clientId: string; broadcasterId: string; moderatorId: string };
@@ -65,6 +81,11 @@ export const api = {
   getLogs: (limit = 200) => req<Record<string, unknown>[]>(`/api/logs?limit=${limit}`),
   getRules: () => req<Rule[]>("/api/rules"),
   getSettings: () => req<SettingsView>("/api/settings"),
+  previewContext: (context: ContextConfig, vars?: { message?: string; username?: string }) =>
+    req<{ state: unknown }>("/api/context/preview", {
+      body: JSON.stringify({ context, vars }),
+      method: "POST",
+    }),
   pauseBot: (paused: boolean) =>
     req<{ paused: boolean }>("/api/bot/pause", {
       body: JSON.stringify({ paused }),

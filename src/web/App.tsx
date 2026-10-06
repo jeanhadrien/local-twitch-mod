@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { ActionsPage } from "./pages/Actions";
+import { ContextPage } from "./pages/Context";
 import { LivePage } from "./pages/Live";
 import { RulesPage } from "./pages/Rules";
 import { SetupPage } from "./pages/Setup";
 import "./styles.css";
 
-const TABS = ["Setup", "Actions", "Rules", "Live"] as const;
+const TABS = ["Setup", "Actions", "Rules", "Context", "Live"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function App() {
@@ -28,6 +29,7 @@ export default function App() {
         {tab === "Setup" && <SetupPage />}
         {tab === "Actions" && <ActionsPage />}
         {tab === "Rules" && <RulesPage />}
+        {tab === "Context" && <ContextPage />}
         {tab === "Live" && <LivePage />}
       </main>
     </div>

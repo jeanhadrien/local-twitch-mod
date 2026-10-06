@@ -240,6 +240,86 @@ async function main() {
     global.fetch = realFetch;
   }
 
+  // 14-18. noul rules: request shape, threshold match/no-match, invalid answer.
+  const noulRule = {
+    choices: [],
+    criteria: { false: "Ordinary chat.", true: "Unsolicited links or promo spam." },
+    enabled: true,
+    id: "rule-noul",
+    instruction: "Is this message spam?",
+    matchValues: [],
+    minConfidence: 0.6,
+    name: "Spam (noul)",
+    type: "noul",
+  };
+  const noulAnswer = (answer) => async () => ({
+    json: async () => ({ answers: { "rule-noul": answer }, usage: { cost: 0.0001 } }),
+    ok: true,
+  });
+
+  // 14. request shape: type "noul" + criteria map
+  let noulSeen;
+  await judge.judgeRule(noulRule, state, {
+    apiKey: "k",
+    fetchFn: async (url, init) => {
+      noulSeen = { body: JSON.parse(init.body), url };
+      return { json: async () => ({ answers: {}, usage: {} }), ok: true };
+    },
+  });
+  assert.equal(noulSeen.body.questions["rule-noul"].type, "noul");
+  assert.deepEqual(noulSeen.body.questions["rule-noul"].criteria, {
+    false: "Ordinary chat.",
+    true: "Unsolicited links or promo spam.",
+  });
+  console.log("PASS noul request shape (type noul + criteria map)");
+
+  // 15. request shape: empty criteria omitted
+  let noCriteriaSeen;
+  await judge.judgeRule({ ...noulRule, criteria: {} }, state, {
+    apiKey: "k",
+    fetchFn: async (url, init) => {
+      noCriteriaSeen = JSON.parse(init.body);
+      return { json: async () => ({ answers: {}, usage: {} }), ok: true };
+    },
+  });
+  assert.equal(noCriteriaSeen.questions["rule-noul"].type, "noul");
+  assert.equal(noCriteriaSeen.questions["rule-noul"].criteria, undefined);
+  console.log("PASS noul empty criteria omitted");
+
+  // 16. noul >= threshold → matched, choice "true"
+  const noulHit = await judge.judgeRule(noulRule, state, {
+    apiKey: "test",
+    fetchFn: noulAnswer({ noul: 0.91, type: "noul" }),
+  });
+  assert.equal(noulHit.matched, true);
+  assert.equal(noulHit.invalid, false);
+  assert.equal(noulHit.choice, "true");
+  assert.equal(noulHit.confidence, 0.91);
+  assert.equal(noulHit.probabilities, null);
+  console.log("PASS noul ≥ threshold → matched (choice true)");
+
+  // 17. noul < threshold → no match, choice "false"
+  const noulMiss = await judge.judgeRule(noulRule, state, {
+    apiKey: "test",
+    fetchFn: noulAnswer({ noul: 0.2, type: "noul" }),
+  });
+  assert.equal(noulMiss.matched, false);
+  assert.equal(noulMiss.invalid, false);
+  assert.equal(noulMiss.choice, "false");
+  assert.equal(noulMiss.confidence, 0.2);
+  console.log("PASS noul < threshold → no match (choice false)");
+
+  // 18. noul missing/non-finite → invalid
+  const noulBad = await judge.judgeRule(noulRule, state, {
+    apiKey: "test",
+    fetchFn: noulAnswer({ type: "noul" }),
+  });
+  assert.equal(noulBad.matched, false);
+  assert.equal(noulBad.invalid, true);
+  assert.equal(noulBad.choice, null);
+  assert.equal(noulBad.confidence, null);
+  console.log("PASS noul missing value → invalid");
+
   console.log("All judge checks passed.");
 }
 

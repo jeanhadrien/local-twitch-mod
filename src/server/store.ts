@@ -8,11 +8,18 @@ export interface RuleChoice {
   description: string;
 }
 
+export interface NoulCriteria {
+  true?: string;
+  false?: string;
+}
+
 export interface Rule {
   id: string;
   name: string;
+  type: "choice" | "noul";
   instruction: string;
   choices: RuleChoice[];
+  criteria?: NoulCriteria;
   matchValues: string[];
   minConfidence: number;
   enabled: boolean;
@@ -32,12 +39,30 @@ export interface Binding {
   actionIds: string[];
 }
 
+/** One key/value row of the user-defined JSON Jev state. */
+export interface ContextField {
+  key: string;
+  value: string;
+}
+
+/**
+ * User-defined Jev `state` context. `json` mode builds a flat object from
+ * `fields`; `text` mode sends `text` as-is. Both embed {{message}}/{{username}}
+ * tokens replaced per chat message (see server/context.ts).
+ */
+export interface ContextConfig {
+  mode: "json" | "text";
+  fields: ContextField[];
+  text: string;
+}
+
 export interface Settings {
   channel: string;
   dryRun: boolean;
   judging: { batch: boolean };
   twitch: { clientId: string; broadcasterId: string; moderatorId: string };
   openrouter: { model: string };
+  context: ContextConfig;
 }
 
 export interface Secrets {
@@ -109,6 +134,15 @@ export function ensureDataDir(): void {
 function defaultSettings(): Settings {
   return {
     channel: "",
+    context: {
+      fields: [
+        { key: "message", value: "{{message}}" },
+        { key: "username", value: "{{username}}" },
+        { key: "context", value: "This message is sent on a Twitch chat." },
+      ],
+      mode: "json",
+      text: "{{username}}: {{message}}",
+    },
     dryRun: true,
     judging: { batch: true },
     twitch: { clientId: "", broadcasterId: "", moderatorId: "" },
@@ -150,6 +184,7 @@ function defaultRules(): Rule[] {
       matchValues: ["spam"],
       minConfidence: 0.6,
       name: "Spam / links",
+      type: "choice",
     },
   ];
 }
@@ -211,7 +246,11 @@ export function patchSecrets(patch: Secrets): Secrets {
 
 // Rules / actions / bindings
 export function getRules(): Rule[] {
-  return readJson<Rule[]>(FILES.rules, defaultRules());
+  // Legacy rules predate the noul type and have no `type` — normalize to "choice".
+  return readJson<Rule[]>(FILES.rules, defaultRules()).map((r) => ({
+    ...r,
+    type: r.type === "noul" ? "noul" : "choice",
+  }));
 }
 export function saveRules(r: Rule[]): void {
   writeJson(FILES.rules, r);

@@ -86,16 +86,15 @@ export function RulesPage() {
           setRules([
             ...(rules ?? []),
             {
-              choices: [
-                { description: "Describe what this choice means for the judge.", value: "yes" },
-                { description: "Describe what this choice means for the judge.", value: "no" },
-              ],
+              choices: [],
+              criteria: {},
               enabled: true,
               id: `new-${Date.now()}`,
               instruction: "Decide whether…",
-              matchValues: ["yes"],
+              matchValues: [],
               minConfidence: 0.6,
               name: "New rule",
+              type: "noul",
             },
           ])
         }
@@ -117,6 +116,20 @@ export function RulesPage() {
               />
               enabled
             </label>
+            <label className="row" title="Multi-choice question; unchecked = calibrated yes/no (noul)">
+              <input
+                type="checkbox"
+                checked={r.type === "choice"}
+                onChange={(e) =>
+                  setRules(
+                    rules.map((x) =>
+                      x.id === r.id ? { ...x, type: e.target.checked ? "choice" : "noul" } : x,
+                    ),
+                  )
+                }
+              />
+              multi-choice
+            </label>
           </div>
           <label>
             Instruction (Jev question)
@@ -126,87 +139,123 @@ export function RulesPage() {
               onChange={(e) => setRules(rules.map((x) => (x.id === r.id ? { ...x, instruction: e.target.value } : x)))}
             />
           </label>
-          <label>
-            Choices (each needs a criteria description — Jev reads these)
-            {r.choices.map((c, ci) => (
-              <div className="row" key={ci}>
-                <input
-                  style={{ maxWidth: 140 }}
-                  value={c.value}
-                  onChange={(e) =>
-                    setRules(
-                      rules.map((x) =>
-                        x.id === r.id
-                          ? { ...x, choices: x.choices.map((cc, j) => (j === ci ? { ...cc, value: e.target.value } : cc)) }
-                          : x,
-                      ),
-                    )
-                  }
-                />
-                <input
-                  value={c.description}
-                  placeholder="criteria description"
-                  onChange={(e) =>
-                    setRules(
-                      rules.map((x) =>
-                        x.id === r.id
-                          ? {
-                              ...x,
-                              choices: x.choices.map((cc, j) =>
-                                j === ci ? { ...cc, description: e.target.value } : cc,
-                              ),
-                            }
-                          : x,
-                      ),
-                    )
-                  }
-                />
-                <label className="row" title="Trigger actions on this choice">
+          {r.type === "choice" ? (
+            <label>
+              Choices (each needs a criteria description — Jev reads these)
+              {r.choices.map((c, ci) => (
+                <div className="row" key={ci}>
                   <input
-                    type="checkbox"
-                    checked={r.matchValues.includes(c.value)}
+                    style={{ maxWidth: 140 }}
+                    value={c.value}
+                    onChange={(e) =>
+                      setRules(
+                        rules.map((x) =>
+                          x.id === r.id
+                            ? { ...x, choices: x.choices.map((cc, j) => (j === ci ? { ...cc, value: e.target.value } : cc)) }
+                            : x,
+                        ),
+                      )
+                    }
+                  />
+                  <input
+                    value={c.description}
+                    placeholder="criteria description"
                     onChange={(e) =>
                       setRules(
                         rules.map((x) =>
                           x.id === r.id
                             ? {
                                 ...x,
-                                matchValues: e.target.checked
-                                  ? [...x.matchValues, c.value]
-                                  : x.matchValues.filter((v) => v !== c.value),
+                                choices: x.choices.map((cc, j) =>
+                                  j === ci ? { ...cc, description: e.target.value } : cc,
+                                ),
                               }
                             : x,
                         ),
                       )
                     }
                   />
-                  match
-                </label>
-                <button
-                  onClick={() =>
-                    setRules(rules.map((x) => (x.id === r.id ? { ...x, choices: x.choices.filter((_, j) => j !== ci) } : x)))
+                  <label className="row" title="Trigger actions on this choice">
+                    <input
+                      type="checkbox"
+                      checked={r.matchValues.includes(c.value)}
+                      onChange={(e) =>
+                        setRules(
+                          rules.map((x) =>
+                            x.id === r.id
+                              ? {
+                                  ...x,
+                                  matchValues: e.target.checked
+                                    ? [...x.matchValues, c.value]
+                                    : x.matchValues.filter((v) => v !== c.value),
+                                }
+                              : x,
+                          ),
+                        )
+                      }
+                    />
+                    match
+                  </label>
+                  <button
+                    onClick={() =>
+                      setRules(rules.map((x) => (x.id === r.id ? { ...x, choices: x.choices.filter((_, j) => j !== ci) } : x)))
+                    }
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={() =>
+                  setRules(
+                    rules.map((x) =>
+                      x.id === r.id
+                        ? { ...x, choices: [...x.choices, { description: "", value: `choice${x.choices.length + 1}` }] }
+                        : x,
+                    ),
+                  )
+                }
+              >
+                + choice
+              </button>
+            </label>
+          ) : (
+            <label>
+              Criteria (optional — Jev reads these)
+              <div className="row">
+                <input style={{ maxWidth: 140 }} value="true" disabled />
+                <input
+                  value={r.criteria?.true ?? ""}
+                  placeholder="true criteria description (yes)"
+                  onChange={(e) =>
+                    setRules(
+                      rules.map((x) =>
+                        x.id === r.id ? { ...x, criteria: { ...x.criteria, true: e.target.value } } : x,
+                      ),
+                    )
                   }
-                >
-                  ✕
-                </button>
+                />
               </div>
-            ))}
-            <button
-              onClick={() =>
-                setRules(
-                  rules.map((x) =>
-                    x.id === r.id
-                      ? { ...x, choices: [...x.choices, { description: "", value: `choice${x.choices.length + 1}` }] }
-                      : x,
-                  ),
-                )
-              }
-            >
-              + choice
-            </button>
-          </label>
+              <div className="row">
+                <input style={{ maxWidth: 140 }} value="false" disabled />
+                <input
+                  value={r.criteria?.false ?? ""}
+                  placeholder="false criteria description (no)"
+                  onChange={(e) =>
+                    setRules(
+                      rules.map((x) =>
+                        x.id === r.id ? { ...x, criteria: { ...x.criteria, false: e.target.value } } : x,
+                      ),
+                    )
+                  }
+                />
+              </div>
+            </label>
+          )}
           <label>
-            Min confidence (match requires choice ∈ matchValues AND confidence ≥ this)
+            {r.type === "noul"
+              ? "Min yes-probability (match requires noul ≥ this)"
+              : "Min confidence (match requires choice ∈ matchValues AND confidence ≥ this)"}
             <input
               type="number"
               min={0}
@@ -219,22 +268,39 @@ export function RulesPage() {
             />
           </label>
           <div>
-            <strong>On match → actions</strong> (per choice value):
-            {r.choices.map((c) => (
-              <div className="row" key={c.value}>
-                <code>{c.value || "(empty)"}</code>
+            <strong>On match → actions</strong>
+            {r.type === "noul" ? " (on yes):" : " (per choice value):"}
+            {r.type === "noul" ? (
+              <div className="row">
+                <code>on yes (true)</code>
                 {actions.map((a) => (
                   <label className="row" key={a.id}>
                     <input
                       type="checkbox"
-                      checked={boundActionIds(r.id, c.value).includes(a.id)}
-                      onChange={() => toggleBinding(r.id, c.value, a.id)}
+                      checked={boundActionIds(r.id, "true").includes(a.id)}
+                      onChange={() => toggleBinding(r.id, "true", a.id)}
                     />
                     {a.name} ({a.type})
                   </label>
                 ))}
               </div>
-            ))}
+            ) : (
+              r.choices.map((c) => (
+                <div className="row" key={c.value}>
+                  <code>{c.value || "(empty)"}</code>
+                  {actions.map((a) => (
+                    <label className="row" key={a.id}>
+                      <input
+                        type="checkbox"
+                        checked={boundActionIds(r.id, c.value).includes(a.id)}
+                        onChange={() => toggleBinding(r.id, c.value, a.id)}
+                      />
+                      {a.name} ({a.type})
+                    </label>
+                  ))}
+                </div>
+              ))
+            )}
           </div>
           <div className="row">
             <button onClick={() => void save(r)}>Save</button>

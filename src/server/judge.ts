@@ -11,16 +11,17 @@ import { HttpStatusError, withRetry } from "./retry";
 export const DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions";
 export const DEFAULT_MODEL = "typesafe/jev-1.13";
 
-export interface ChatState {
-  user: string;
-  message: string;
-}
-
 export interface ChoiceAnswer {
   type: "choice";
   choice: string;
   confidence: number;
   probabilities: Record<string, number>;
+}
+
+export interface NoulAnswer {
+  type: "noul";
+  /** Probability the answer is "yes", 0..1. The app thresholds it. */
+  noul: number;
 }
 
 export interface JudgeResult {
@@ -56,6 +57,44 @@ function toNumber(v: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** Pure noul evaluation: `noul >= minConfidence` matches, emitting choice "true"/"false". */
+function evaluateNoulAnswer(
+  rule: Rule,
+  answer: unknown,
+  latencyMs: number,
+  costUsd: number | null,
+): JudgeResult {
+  const base = {
+    choice: null as string | null,
+    confidence: null as number | null,
+    costUsd,
+    invalid: false,
+    latencyMs,
+    lowConfidence: false,
+    matched: false,
+    probabilities: null as Record<string, number> | null,
+    ruleId: rule.id,
+  };
+  const rec =
+    answer && typeof answer === "object" ? (answer as Record<string, unknown>) : null;
+  const raw = rec ? rec["noul"] : undefined;
+  const noul = raw === undefined || raw === null ? NaN : toNumber(raw, NaN);
+  if (!rec || !Number.isFinite(noul)) {
+    return { ...base, invalid: true, matched: false };
+  }
+  const threshold =
+    rule.minConfidence === undefined || rule.minConfidence === null
+      ? 0.6
+      : toNumber(rule.minConfidence, 0.6);
+  const matched = noul >= threshold;
+  return {
+    ...base,
+    choice: matched ? "true" : "false",
+    confidence: noul,
+    matched,
+  };
+}
+
 /** Pure match evaluation shared by live judging, the test playground, and verification. */
 export function evaluateAnswer(
   rule: Rule,
@@ -63,6 +102,7 @@ export function evaluateAnswer(
   latencyMs = 0,
   costUsd: number | null = null,
 ): JudgeResult {
+  if (rule.type === "noul") return evaluateNoulAnswer(rule, answer, latencyMs, costUsd);
   const base = {
     choice: null as string | null,
     confidence: null as number | null,
@@ -120,11 +160,24 @@ export function evaluateAnswer(
 /** Build the Decisions API request body for a set of rules (one question per rule). */
 export function buildDecisionsBody(
   rules: Rule[],
-  state: ChatState,
+  state: unknown,
   model: string,
 ): Record<string, unknown> {
   const questions: Record<string, unknown> = {};
   for (const rule of rules) {
+    if (rule.type === "noul") {
+      const criteria: Record<string, string> = {};
+      if (rule.criteria?.true) criteria["true"] = rule.criteria.true;
+      if (rule.criteria?.false) criteria["false"] = rule.criteria.false;
+      const question: Record<string, unknown> = {
+        instructions: rule.instruction,
+        type: "noul",
+      };
+      // criteria is optional for noul — omit it when both descriptions are empty.
+      if (Object.keys(criteria).length > 0) question["criteria"] = criteria;
+      questions[rule.id] = question;
+      continue;
+    }
     const criteria: Record<string, string> = {};
     for (const c of rule.choices) criteria[c.value] = c.description;
     questions[rule.id] = {
@@ -136,7 +189,7 @@ export function buildDecisionsBody(
   return {
     model,
     questions,
-    state: { message: state.message, user: state.user },
+    state,
   };
 }
 
@@ -177,7 +230,7 @@ async function postDecisions(
 /** One Jev call for one rule. Never throws — transport errors become invalid results. */
 export async function judgeRule(
   rule: Rule,
-  state: ChatState,
+  state: unknown,
   opts: JudgeOpts,
 ): Promise<JudgeResult> {
   const model = opts.model || DEFAULT_MODEL;
@@ -218,7 +271,7 @@ export async function judgeRule(
  */
 export async function judgeRulesBatched(
   rules: Rule[],
-  state: ChatState,
+  state: unknown,
   opts: JudgeOpts,
 ): Promise<JudgeResult[]> {
   const model = opts.model || DEFAULT_MODEL;
@@ -243,7 +296,7 @@ export async function judgeRulesBatched(
 /** Batch by default (single call + sequential fallback); sequential if batch === false. */
 export async function judgeAllRules(
   rules: Rule[],
-  state: ChatState,
+  state: unknown,
   opts: JudgeOpts,
 ): Promise<JudgeResult[]> {
   const enabled = rules.filter((r) => r.enabled);

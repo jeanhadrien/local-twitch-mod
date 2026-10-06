@@ -1,6 +1,7 @@
 // REST API + Twitch OAuth callback + SSE feed.
 import type { Express, Request, Response } from "express";
 import { executeActions, resolveActions } from "./actions";
+import { ContextError, resolveContext, validateContext } from "./context";
 import { broadcast, sseSubscribe } from "./events";
 import { judgeAllRules } from "./judge";
 import {
@@ -19,6 +20,8 @@ import {
   saveSettings,
   type ActionDef,
   type Binding,
+  type ContextConfig,
+  type ContextField,
   type Rule,
 } from "./store";
 import {
@@ -34,11 +37,49 @@ function port(): number {
   return Number(process.env.PORT ?? 3000);
 }
 
+/**
+ * Validate an untrusted `context` payload: shape first (mode/fields/text), then
+ * token/key semantics via validateContext. Returns the config or an error list.
+ */
+function parseContext(raw: unknown): ContextConfig | { errors: string[] } {
+  if (!raw || typeof raw !== "object") return { errors: ["context must be an object"] };
+  const obj = raw as Record<string, unknown>;
+  const errors: string[] = [];
+  const mode = obj["mode"];
+  if (mode !== "json" && mode !== "text") errors.push('context.mode must be "json" or "text"');
+  const text = obj["text"];
+  if (typeof text !== "string") errors.push("context.text must be a string");
+  const fields: ContextField[] = [];
+  const rawFields = obj["fields"];
+  if (!Array.isArray(rawFields)) {
+    errors.push("context.fields must be an array");
+  } else {
+    rawFields.forEach((f, i) => {
+      if (!f || typeof f !== "object") {
+        errors.push(`context.fields[${i}] must be an object`);
+        return;
+      }
+      const rec = f as Record<string, unknown>;
+      if (typeof rec["key"] !== "string") errors.push(`context.fields[${i}].key must be a string`);
+      if (typeof rec["value"] !== "string")
+        errors.push(`context.fields[${i}].value must be a string`);
+      if (typeof rec["key"] === "string" && typeof rec["value"] === "string")
+        fields.push({ key: rec["key"], value: rec["value"] });
+    });
+  }
+  if (errors.length > 0) return { errors };
+  const cfg: ContextConfig = { fields, mode: mode as ContextConfig["mode"], text: text as string };
+  const semantic = validateContext(cfg);
+  if (semantic.length > 0) return { errors: semantic };
+  return cfg;
+}
+
 function sanitizedSettings() {
   const s = getSettings();
   const secrets = getSecrets();
   return {
     channel: s.channel,
+    context: s.context,
     dryRun: s.dryRun,
     judging: { batch: s.judging?.batch !== false },
     openrouter: { model: s.openrouter.model },
@@ -55,6 +96,12 @@ export function registerRoutes(app: Express): void {
   app.put("/api/settings", (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const cur = getSettings();
+    let context = cur.context;
+    if (body["context"] !== undefined) {
+      const parsed = parseContext(body["context"]);
+      if ("errors" in parsed) return res.status(400).json({ errors: parsed.errors });
+      context = parsed;
+    }
     const channel =
       typeof body["channel"] === "string" ? (body["channel"] as string) : cur.channel;
     const dryRun = typeof body["dryRun"] === "boolean" ? body["dryRun"] : cur.dryRun;
@@ -64,6 +111,7 @@ export function registerRoutes(app: Express): void {
     const next = {
       ...cur,
       channel: channel.trim().replace(/^#/, ""),
+      context,
       dryRun,
       judging: {
         batch:
@@ -104,12 +152,20 @@ export function registerRoutes(app: Express): void {
     const rules = getRules();
     const rule: Rule = {
       choices: Array.isArray(body.choices) ? body.choices : [],
+      criteria:
+        body.criteria && typeof body.criteria === "object"
+          ? {
+              ...(typeof body.criteria.true === "string" ? { true: body.criteria.true } : {}),
+              ...(typeof body.criteria.false === "string" ? { false: body.criteria.false } : {}),
+            }
+          : undefined,
       enabled: body.enabled ?? true,
       id: newId("rule"),
       instruction: body.instruction ?? "",
       matchValues: Array.isArray(body.matchValues) ? body.matchValues : [],
       minConfidence: typeof body.minConfidence === "number" ? body.minConfidence : 0.6,
       name: body.name ?? "Untitled rule",
+      type: body.type === "noul" ? "noul" : "choice",
     };
     rules.push(rule);
     saveRules(rules);
@@ -120,7 +176,8 @@ export function registerRoutes(app: Express): void {
     const rules = getRules();
     const i = rules.findIndex((r) => r.id === req.params.id);
     if (i === -1) return res.status(404).json({ error: "rule not found" });
-    rules[i] = { ...rules[i], ...req.body, id: rules[i].id };
+    const merged = { ...rules[i], ...req.body, id: rules[i].id };
+    rules[i] = { ...merged, type: merged.type === "noul" ? "noul" : "choice" };
     saveRules(rules);
     return res.json(rules[i]);
   });
@@ -194,9 +251,20 @@ export function registerRoutes(app: Express): void {
     const settings = getSettings();
     let rules = getRules().filter((r) => r.enabled);
     if (body.ruleId) rules = rules.filter((r) => r.id === body.ruleId);
+    let state: unknown;
+    try {
+      state = resolveContext(settings.context, {
+        message: body.message,
+        username: body.user ?? "tester",
+      });
+    } catch (err) {
+      if (err instanceof ContextError)
+        return res.status(400).json({ errors: err.errors });
+      throw err;
+    }
     const results = await judgeAllRules(
       rules,
-      { message: body.message, user: body.user ?? "tester" },
+      state,
       { apiKey, batch: settings.judging?.batch !== false, model: settings.openrouter.model },
     );
     const bindings = getBindings();
@@ -214,6 +282,22 @@ export function registerRoutes(app: Express): void {
           : [],
       })),
     );
+  });
+
+  // --- context preview: resolve state for sample/custom vars (parity with pipeline) ---
+  app.post("/api/context/preview", (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { context?: unknown; vars?: Record<string, unknown> };
+    const parsed = parseContext(body.context);
+    if ("errors" in parsed) return res.status(400).json({ errors: parsed.errors });
+    const vars = body.vars ?? {};
+    const state = resolveContext(parsed, {
+      message:
+        typeof vars["message"] === "string"
+          ? vars["message"]
+          : "FREE FOLLOWERS at scam.example",
+      username: typeof vars["username"] === "string" ? vars["username"] : "someviewer",
+    });
+    return res.json({ state });
   });
 
   // --- logs ---
@@ -342,9 +426,21 @@ export async function handleLiveMessage(
   if (!apiKey || rules.length === 0) return;
   const bindings = getBindings();
   const actions = getActions();
+  // resolveContext throws on a hand-edited invalid config — skip judging this
+  // message instead of crashing on an unhandled rejection (void-invoked caller).
+  let state: unknown;
+  try {
+    state = resolveContext(settings.context, { message: text, username: user });
+  } catch (err) {
+    console.warn(
+      "Skipping judgment: invalid context config:",
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
   const results = await judgeAllRules(
     rules,
-    { message: text, user },
+    state,
     { apiKey, batch: settings.judging?.batch !== false, model: settings.openrouter.model },
   );
   for (const r of results) {
